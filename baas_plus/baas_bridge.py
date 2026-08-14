@@ -145,8 +145,15 @@ class BaasBridge:
 
     # ---- 模拟器 ----
 
-    def start_simulator(self) -> str:
-        """启动模拟器并返回 ADB 地址（如 127.0.0.1:16384）"""
+    def start_simulator(self, wait_timeout: int = 180) -> str:
+        """启动模拟器并等待其完全就绪，返回 ADB 地址（如 127.0.0.1:16384）
+
+        BAAS 的 start_simulator_classic 只是发出启动指令（异步），不等待模拟器
+        进程/ADB 就绪；这里通过 return_status 查询启动状态并轮询 ADB 连接，
+        确保后续初始化 BAAS / 启动游戏时模拟器已可用。
+        """
+        import time
+
         import_baas(self.config.baas.repo_dir)
         # BAAS 1.4.x 中 emulator_manager 是 core/device/emulator_manager 包
         from core.device.emulator_manager.start_simulator import start_simulator_classic
@@ -155,12 +162,45 @@ class BaasBridge:
         instance = self.config.simulator.instance
         logger.info("启动模拟器: %s 实例 %s", sim_type, instance)
 
-        adb_address = start_simulator_classic(sim_type, instance)
+        result = start_simulator_classic(sim_type, instance, return_status=True)
+        if isinstance(result, (list, tuple)):
+            status, adb_address = result[0], result[1]
+            # 蓝叠在 return_status 下返回端口可能为 None（首次启动时端口未出现），重取一次
+            if not adb_address:
+                adb_address = start_simulator_classic(sim_type, instance)
+        else:
+            status, adb_address = None, result
         if not adb_address:
             raise RuntimeError(f"模拟器启动失败或未返回 ADB 地址: {sim_type} #{instance}")
-        logger.info("模拟器已启动，ADB 地址: %s", adb_address)
+        logger.info("模拟器启动指令已发出，ADB 地址: %s（启动状态: %s），等待就绪...", adb_address, status)
+
+        self._wait_simulator_ready(adb_address, wait_timeout)
         self._started = True
         return adb_address
+
+    def _wait_simulator_ready(self, adb_address: str, timeout: int = 180) -> None:
+        """轮询等待模拟器 ADB 端口可用（模拟器冷启动可能耗时 1-3 分钟）"""
+        import time
+
+        try:
+            from adbutils import adb
+        except ImportError:
+            logger.warning("adbutils 不可用，跳过模拟器就绪等待（超时 %ss）", timeout)
+            time.sleep(10)
+            return
+        deadline = time.time() + timeout
+        waited = 0
+        while time.time() < deadline:
+            try:
+                adb.connect(adb_address)
+                device = adb.device(adb_address)
+                device.shell("echo ok", timeout=5)
+                logger.info("模拟器 ADB 就绪（等待 %ss）", waited)
+                return
+            except Exception:
+                time.sleep(3)
+                waited += 3
+        raise RuntimeError(f"等待模拟器就绪超时（{timeout}s）：{adb_address}，请确认模拟器已安装且可启动")
 
     # ---- BAAS 线程 ----
 
@@ -186,13 +226,32 @@ class BaasBridge:
         if self.baas_thread is None:
             raise RuntimeError("Baas_thread 未初始化，请先调用 create_baas()")
         logger.info("执行 BAAS 任务: %s", task)
-        return self.baas_thread.solve(task)
+        result = self.baas_thread.solve(task)
+        self._last_next_time = getattr(self.baas_thread, "next_time", 0) or 0
+        return result
+
+    @property
+    def last_next_time(self) -> int:
+        """最近一次任务的冷却秒数（BAAS 任务可通过 next_time 请求延迟后再次执行）"""
+        return getattr(self, "_last_next_time", 0)
 
     def get_ap(self) -> int:
         """读取当前体力（-1 表示读取失败）"""
         if self.baas_thread is None:
             raise RuntimeError("Baas_thread 未初始化")
         return self.baas_thread.get_ap(True)
+
+    # ---- 配置读取 ----
+
+    def get_baas_sweep_config(self) -> dict[str, str]:
+        """读取 BAAS 配置中的扫荡列表（mainlinePriority / hardPriority，格式 "区域-关卡-次数"）"""
+        if self.baas_thread is None:
+            raise RuntimeError("Baas_thread 未初始化")
+        config_set = self.baas_thread.config_set
+        return {
+            "mainlinePriority": str(config_set.get("mainlinePriority", "") or ""),
+            "hardPriority": str(config_set.get("hardPriority", "") or ""),
+        }
 
     # ---- 配置改写 ----
 

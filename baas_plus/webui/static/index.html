@@ -79,7 +79,7 @@
         <div><label>多开实例（0 起）</label><input id="sim_instance" type="number" value="0"></div>
       </div>
       <label>BAAS 源码目录（repo_dir，留空用已安装包）</label><input id="baas_repo_dir" placeholder="C:\BAAS">
-      <label>BAAS 配置目录名（config/ 下子目录）</label><input id="baas_config_dir" placeholder="default">
+      <label>BAAS 配置目录名（config/ 下子目录）</label><select id="baas_config_dir"></select>
       <label>服务器</label>
       <select id="baas_server">
         <option value="cn">国服 cn</option>
@@ -182,7 +182,7 @@ async function loadConfig() {
   $('sim_type').value = cfg.simulator.type;
   $('sim_instance').value = cfg.simulator.instance;
   $('baas_repo_dir').value = cfg.baas.repo_dir;
-  $('baas_config_dir').value = cfg.baas.config_dir;
+  await loadConfigDirs(cfg.baas.config_dir);
   $('baas_server').value = cfg.baas.server;
   $('baas_current_activity').value = cfg.baas.current_activity;
   $('act_push_story').checked = cfg.activity.push_story_on_new;
@@ -208,6 +208,26 @@ async function loadConfig() {
   loadActivities();
 }
 
+async function loadConfigDirs(current) {
+  let dirs = [];
+  try { dirs = await api('/api/baas-config-dirs'); } catch (e) {}
+  if (!dirs.length) dirs = ['cn', 'global', 'jp', 'steam'];
+  const sel = $('baas_config_dir');
+  sel.innerHTML = '';
+  dirs.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d; opt.textContent = d;
+    if (d === current) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  if (!dirs.includes(current) && current) {
+    const opt = document.createElement('option');
+    opt.value = current; opt.textContent = current + '（自定义）';
+    opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
 async function renderTasks() {
   const tasks = await api('/api/tasks');
   const box = $('task_list');
@@ -215,10 +235,10 @@ async function renderTasks() {
   tasks.forEach(t => {
     const label = document.createElement('label');
     const cb = document.createElement('input');
-    cb.type = 'checkbox'; cb.value = t; cb.checked = (cfg.baas.tasks || []).includes(t);
+    cb.type = 'checkbox'; cb.value = t.name; cb.checked = (cfg.baas.tasks || []).includes(t.name);
     cb.onchange = () => label.classList.toggle('checked', cb.checked);
     label.appendChild(cb);
-    label.appendChild(document.createTextNode(t));
+    label.appendChild(document.createTextNode(t.label));
     if (cb.checked) label.classList.add('checked');
     box.appendChild(label);
   });
@@ -340,7 +360,7 @@ async function loadActivities() {
     const box = $('activity_box');
     box.innerHTML =
       '<div class="sub">🎯 可扫荡活动（决定「有活动优先扫活动」）</div>' + render(data.current, true) +
-      '<div class="sub" style="margin-top:14px;">ℹ️ 其他事件（总力战/大决战/卡池，无需扫荡，仅展示）</div>' + render(data.other, false);
+      '<div class="sub">' + render(data.other, false) + '</div>';
   } catch (e) { $('activity_box').textContent = '加载失败: ' + e.message; }
 }
 

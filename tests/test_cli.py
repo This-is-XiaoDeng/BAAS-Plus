@@ -1,5 +1,6 @@
 """CLI 入口回归测试"""
 import logging
+import shutil
 import sys
 from pathlib import Path
 
@@ -11,9 +12,9 @@ def test_cli_import_without_data_dir(tmp_path, monkeypatch):
     data_dir = project_root / "data"
     existed = data_dir.exists()
     if existed:
-        # 备份后移除
+        # 备份后移除（shutil.move 支持跨文件系统）
         backup = tmp_path / "data_backup"
-        data_dir.rename(backup)
+        shutil.move(str(data_dir), str(backup))
 
     import importlib
 
@@ -29,7 +30,7 @@ def test_cli_import_without_data_dir(tmp_path, monkeypatch):
     finally:
         if existed:
             # 恢复原 data 目录
-            backup.rename(data_dir)
+            shutil.move(str(backup), str(data_dir))
         elif data_dir.exists():
             # 测试创建的，删掉
             for f in data_dir.iterdir():

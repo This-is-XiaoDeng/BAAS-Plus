@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from .activity import ActivityFetcher, EventType, GameEvent
 from .baas_bridge import BaasBridge, compute_sweep_times
-from .config import AppConfig
+from .config import AppConfig, SWEEP_TASKS
 from .notifier import EmailNotifier
 from .store import Store
 
@@ -142,7 +142,11 @@ class Engine:
         return result
 
     def run_sweep(self) -> list[str]:
-        """扫荡阶段：返回实际执行的扫荡任务"""
+        """扫荡阶段：返回实际执行的扫荡任务
+
+        BAAS-Plus 配置的扫荡列表为空时，回退读取 BAAS 配置中的
+        mainlinePriority / hardPriority（格式一致："区域-关卡-次数"）。
+        """
         swept: list[str] = []
         ap = self.bridge.get_ap()
         self.result.ap_before_sweep = ap
@@ -161,18 +165,50 @@ class Engine:
             swept.append(f"activity:{self.config.sweep.activity_task_number}(auto)")
             ap = self.bridge.get_ap()
 
-        normal = self._build_sweep_list(self.config.sweep.normal_tasks, ap, is_normal=True)
-        hard = self._build_sweep_list(self.config.sweep.hard_tasks, ap, is_normal=False)
+        normal_tasks = self.config.sweep.normal_tasks
+        hard_tasks = self.config.sweep.hard_tasks
+        if not normal_tasks and not hard_tasks:
+            # 回退读取 BAAS 配置里的扫荡列表（逗号分隔的 "区域-关卡-次数"）
+            try:
+                baas_cfg = self.bridge.get_baas_sweep_config()
+                normal_tasks = [s.strip() for s in baas_cfg["mainlinePriority"].split(",") if s.strip()]
+                hard_tasks = [s.strip() for s in baas_cfg["hardPriority"].split(",") if s.strip()]
+                logger.info("扫荡列表取自 BAAS 配置: normal=%s hard=%s", normal_tasks, hard_tasks)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("读取 BAAS 扫荡配置失败: %s", exc)
+
+        normal = self._build_sweep_list(normal_tasks, ap, is_normal=True)
+        hard = self._build_sweep_list(hard_tasks, ap, is_normal=False)
         if normal:
-            self.bridge.set_sweep_tasks(normal, hard if not hard else [])
+            self.bridge.set_sweep_tasks(normal, hard)
             self.bridge.solve("normal_task")
             swept.extend(normal)
         if hard:
-            if not normal:
-                self.bridge.set_sweep_tasks([], hard)
+            # normal/hard 同时存在时也必须把 hard 列表设置进去（BAAS 按 hardPriority 消费）
+            self.bridge.set_sweep_tasks(normal, hard)
             self.bridge.solve("hard_task")
             swept.extend(hard)
         return swept
+
+    def _run_task_checked(self, task: str) -> None:
+        """执行单个勾选任务并记录；arena 自动重复至票用完（含冷却等待）"""
+        import time
+
+        if task == "arena":
+            # BAAS arena 模块：票数 >1 时打一场后设置 next_time（默认 55s 冷却）
+            # 请求调度器再次执行，直到票用完（next_time 归 0）。BAAS-Plus 不走
+            # scheduler 主循环，这里手动模拟重复执行，最多 6 场（5 票 + 容差）。
+            for i in range(6):
+                self.bridge.solve("arena")
+                self.result.executed_tasks.append("arena")
+                cooldown = self.bridge.last_next_time
+                if cooldown <= 0:
+                    break
+                logger.info("竞技场冷却 %ss，等待后继续（第 %s 场）", cooldown, i + 2)
+                time.sleep(cooldown)
+            return
+        self.bridge.solve(task)
+        self.result.executed_tasks.append(task)
 
     # ---- 主流程 ----
 
@@ -206,16 +242,26 @@ class Engine:
                     pushed = self.push_new_activity(event)
                     self.result.pushed_activities.extend(pushed)
 
-            # 3. 勾选任务
+            # 3. 启动游戏并确保在主界面（BAAS 官方主循环的第一步 restart）
+            try:
+                self.bridge.solve("restart")
+                self.result.executed_tasks.append("restart")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("启动游戏失败: %s", exc)
+                self.result.status = "partial"
+
+            # 4. 勾选任务（扫荡类任务由扫荡阶段统一调度，避免重复执行）
             for task in self.config.baas.tasks:
+                if task in SWEEP_TASKS:
+                    logger.info("跳过任务 %s（由扫荡阶段按体力统一调度）", task)
+                    continue
                 try:
-                    self.bridge.solve(task)
-                    self.result.executed_tasks.append(task)
+                    self._run_task_checked(task)
                 except Exception as exc:  # noqa: BLE001
                     logger.error("任务 %s 执行失败: %s", task, exc)
                     self.result.status = "partial"
 
-            # 4. 扫荡
+            # 5. 扫荡
             self.result.swept = self.run_sweep()
 
             self.result.summary = self._build_summary()

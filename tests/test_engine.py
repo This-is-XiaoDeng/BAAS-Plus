@@ -20,6 +20,8 @@ class FakeBridge:
         self.normal_tasks = None
         self.hard_tasks = None
         self.activity_sweep = None
+        self._next_time = 0
+        self.baas_sweep_config = {"mainlinePriority": "", "hardPriority": ""}
 
     def start_simulator(self):
         self.started = True
@@ -32,8 +34,15 @@ class FakeBridge:
         self.solves.append(task)
         return True
 
+    @property
+    def last_next_time(self):
+        return self._next_time
+
     def get_ap(self):
         return self.ap
+
+    def get_baas_sweep_config(self):
+        return self.baas_sweep_config
 
     def set_current_activity(self, module_name):
         self.current_activity = module_name
@@ -204,3 +213,68 @@ def test_has_active_activity_excludes_assault(tmp_path):
     )
     engine.store = store
     assert not engine.has_active_activity()
+
+
+@pytest.mark.asyncio
+async def test_sweep_tasks_skipped_in_task_phase(tmp_path):
+    """勾选任务里的扫荡类任务（normal_task/activity_sweep）不重复执行，统一由扫荡阶段调度"""
+    bridge = FakeBridge(ap=200)
+    engine = make_engine(
+        bridge,
+        events=[],
+        data_dir=str(tmp_path),
+        baas={"tasks": ["cafe_reward", "normal_task", "activity_sweep"]},
+        sweep={"normal_tasks": ["15-1-99"]},
+    )
+    result = await engine.run_once()
+    # 任务阶段只执行非扫荡任务；扫荡类在扫荡阶段按体力执行
+    assert bridge.solves.count("cafe_reward") == 1
+    assert bridge.solves.count("normal_task") == 1  # 仅扫荡阶段一次
+    assert "activity_sweep" not in bridge.solves  # 无活动时不执行活动扫荡
+    assert result.executed_tasks == ["restart", "cafe_reward"]
+
+
+@pytest.mark.asyncio
+async def test_arena_loops_until_tickets_done(tmp_path, monkeypatch):
+    """arena 自动重复：next_time>0 时等待冷却后继续，直到票用完（next_time=0）"""
+    monkeypatch.setattr("time.sleep", lambda s: None)  # 测试中不真等冷却
+    next_times = iter([55, 55, 0])  # 第 1、2 场后冷却，第 3 场结束
+
+    class ArenaBridge(FakeBridge):
+        @property
+        def last_next_time(self):
+            try:
+                return next(next_times)
+            except StopIteration:
+                return 0
+
+    bridge = ArenaBridge(ap=100)
+    engine = make_engine(
+        bridge,
+        events=[],
+        data_dir=str(tmp_path),
+        baas={"tasks": ["arena"]},
+        sweep={"normal_tasks": []},
+    )
+    result = await engine.run_once()
+    assert bridge.solves.count("arena") == 3
+    assert result.executed_tasks.count("arena") == 3
+
+
+@pytest.mark.asyncio
+async def test_sweep_fallback_to_baas_config(tmp_path):
+    """BAAS-Plus 扫荡列表为空时，回退读取 BAAS 配置里的 mainlinePriority/hardPriority"""
+    bridge = FakeBridge(ap=120)
+    bridge.baas_sweep_config = {"mainlinePriority": "5-1-3,6-1-2", "hardPriority": "20-1-1"}
+    engine = make_engine(
+        bridge,
+        events=[],
+        data_dir=str(tmp_path),
+        baas={"tasks": ["mail"]},
+        sweep={"normal_tasks": [], "hard_tasks": []},
+    )
+    result = await engine.run_once()
+    # auto 模式按体力重算：120/10=12 次（上限 99），原次数被重算
+    assert bridge.normal_tasks == ["5-1-12", "6-1-12"]
+    assert bridge.hard_tasks == ["20-1-3"]  # 困难图按体力重算，封顶 3 次
+    assert result.status == "success"

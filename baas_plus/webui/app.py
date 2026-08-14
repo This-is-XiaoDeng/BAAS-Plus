@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..activity import ActivityFetcher
-from ..config import AppConfig, BAAS_TASKS, load_config, save_config
+from ..config import AppConfig, BAAS_TASKS, TASK_LABELS, load_config, save_config
 from ..engine import Engine
 from ..notifier import EmailNotifier
 from ..store import Store
@@ -53,8 +53,30 @@ def create_app(config: AppConfig) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/tasks")
-    def get_tasks() -> list[str]:
-        return BAAS_TASKS
+    def get_tasks() -> list[dict[str, str]]:
+        """可勾选任务列表（含中文名）"""
+        return [{"name": t, "label": TASK_LABELS.get(t, t)} for t in BAAS_TASKS]
+
+    @app.get("/api/baas-config-dirs")
+    def get_baas_config_dirs() -> list[str]:
+        """BAAS 配置目录候选（BAAS 根 config/ 下的子目录；读取失败时返回内置选项）"""
+        import os
+        from pathlib import Path
+
+        builtin = ["cn", "global", "jp", "steam"]
+        repo_dir = config.baas.repo_dir
+        if repo_dir:
+            base = Path(repo_dir) / "config"
+        else:
+            base = Path.cwd() / "config"
+        try:
+            if base.is_dir():
+                dirs = sorted(d.name for d in base.iterdir() if d.is_dir())
+                if dirs:
+                    return dirs
+        except OSError:
+            pass
+        return builtin
 
     # ---- 执行记录 ----
 

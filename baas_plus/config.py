@@ -46,6 +46,40 @@ BAAS_TASKS: list[str] = [
     "total_assault",  # 总力战（BAAS master 已禁用）
 ]
 
+# 任务中文名（WebUI 展示用）
+TASK_LABELS: dict[str, str] = {
+    "cafe_reward": "咖啡厅",
+    "lesson": "课程表",
+    "collect_reward": "领取奖励",
+    "collect_daily_free_power": "每日免费体力",
+    "group": "社团",
+    "mail": "邮件",
+    "friend": "好友",
+    "main_story": "主线剧情",
+    "group_story": "社团剧情",
+    "mini_story": "小故事",
+    "scrimmage": "演习",
+    "arena": "竞技场（自动重复至票用完）",
+    "joint_firing_drill": "联合作战",
+    "rewarded_task": "悬赏通缉",
+    "clear_special_task_power": "特别依赖",
+    "create": "制造",
+    "dailyGameActivity": "每日活动",
+    "explore_normal_task": "推图-普通",
+    "explore_hard_task": "推图-困难",
+    "normal_task": "扫荡-普通",
+    "hard_task": "扫荡-困难",
+    "activity_sweep": "扫荡-活动",
+    "explore_activity_story": "活动推图-剧情",
+    "explore_activity_challenge": "活动推图-挑战",
+    "explore_activity_mission": "活动推图-任务",
+    "de_clothes": "脱衣服",
+    "total_assault": "总力战（已禁用）",
+}
+
+# 扫荡类任务：由引擎扫荡阶段统一调度（按体力算次数），勾选后不会在任务阶段重复执行
+SWEEP_TASKS = {"normal_task", "hard_task", "activity_sweep"}
+
 
 class SimulatorConfig(BaseModel):
     """模拟器配置（复用 BAAS 的 emulator_manager 支持类型）"""
