@@ -41,7 +41,21 @@ def import_baas(repo_dir: str = "") -> Any:
 
         return Baas_thread, ConfigSet, Main
     except ImportError as exc:
-        raise RuntimeError(BAAS_IMPORT_ERROR) from exc
+        # 区分两类原因：BAAS 本身不在路径 vs 依赖缺失
+        if "No module named" in str(exc):
+            missing = str(exc).split("'")[1] if "'" in str(exc) else str(exc)
+            raise RuntimeError(
+                f"无法导入 BAAS 模块（缺少 {missing}）。\n"
+                f"当前 repo_dir={repo_dir or '(空，用已安装包)'}，sys.path 前两项: {sys.path[:2]}\n"
+                f"请确认：1) 在 poetry 虚拟环境内执行 poetry install -E baas（不要用系统 pip）；"
+                f"2) 或配置 baas.repo_dir 指向 BAAS 源码目录（如 D:\\BAAS）。"
+                f"原始错误: {exc}"
+            ) from exc
+        raise RuntimeError(
+            f"BAAS 模块导入失败（可能是依赖缺失或不兼容，如 numpy/opencv 与当前 Python 版本不匹配）。"
+            f"原始错误: {exc}\n请确认 BAAS 的依赖已全部安装（poetry install -E baas），"
+            f"且 Python 版本受支持（BAAS 1.4.3 需 Python ≤3.12）。"
+        ) from exc
 
 
 class BaasBridge:
