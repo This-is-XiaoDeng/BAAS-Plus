@@ -72,8 +72,11 @@ def create_app(config: AppConfig) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"活动数据源拉取失败: {exc}") from exc
         seen = {r["event_key"] for r in store.list_activities(limit=500)}
+        sweepable = [e for e in current if e.is_sweepable]  # 仅常规活动（总力战/大决战/卡池不参与扫荡）
+        other = [e for e in current if not e.is_sweepable]
         return {
-            "current": [e.__dict__ for e in current],
+            "current": [e.__dict__ for e in sweepable],
+            "other": [e.__dict__ for e in other],
             "seen_keys": sorted(seen),
             "new": [e.__dict__ for e in current if e.key not in seen],
         }
@@ -112,6 +115,30 @@ def create_app(config: AppConfig) -> FastAPI:
             "BAAS-Plus 测试邮件", "这是一封测试邮件，收到即表示 SMTP 配置正确。"
         )
         return {"ok": ok}
+
+    # ---- 测试 - 模拟器 / BAAS ----
+
+    @app.post("/api/test-simulator")
+    def test_simulator() -> dict[str, Any]:
+        from ..baas_bridge import BaasBridge
+
+        bridge = BaasBridge(config)
+        try:
+            adb = bridge.start_simulator()
+            return {"ok": True, "adb": adb, "message": f"模拟器已启动，ADB 地址: {adb}"}
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"模拟器测试失败: {exc}") from exc
+
+    @app.post("/api/test-baas")
+    def test_baas() -> dict[str, Any]:
+        from ..baas_bridge import BaasBridge
+
+        bridge = BaasBridge(config)
+        try:
+            info = bridge.check_baas()
+            return {"ok": True, **info}
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"BAAS 测试失败: {exc}") from exc
 
     # ---- 静态页面 ----
 

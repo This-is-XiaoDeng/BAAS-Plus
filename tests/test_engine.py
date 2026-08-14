@@ -188,3 +188,19 @@ def test_has_active_activity(tmp_path):
     )
     engine.store = store
     assert engine.has_active_activity()
+
+
+def test_has_active_activity_excludes_assault(tmp_path):
+    """总力战/大决战等 assault 事件不应触发「有活动优先扫活动」"""
+    from baas_plus.store import Store
+
+    engine = make_engine(FakeBridge(), events=[], data_dir=str(tmp_path))
+    store = Store(engine.config.data_path / "x.db")
+    store.mark_activity_seen(
+        GameEvent(id=10, title="总力战", start_at=0, end_at=int(time.time()) + 1000, event_type=EventType.ASSAULT)
+    )
+    store.mark_activity_seen(
+        GameEvent(id=11, title="卡池", start_at=0, end_at=int(time.time()) + 1000, event_type=EventType.CARD)
+    )
+    engine.store = store
+    assert not engine.has_active_activity()

@@ -92,6 +92,16 @@ def test_game_event_key():
     assert e.key == "event:1"
 
 
+def test_sweepable_only_event():
+    """仅常规活动需要扫荡；总力战/大决战/卡池不需要"""
+    event = GameEvent(id=1, title="活动", start_at=0, end_at=9999999999, event_type=EventType.EVENT)
+    assault = GameEvent(id=2, title="总力战", start_at=0, end_at=9999999999, event_type=EventType.ASSAULT)
+    card = GameEvent(id=3, title="卡池", start_at=0, end_at=9999999999, event_type=EventType.CARD)
+    assert event.is_sweepable
+    assert not assault.is_sweepable
+    assert not card.is_sweepable
+
+
 def test_fetcher_invalid_server():
     with pytest.raises(ValueError):
         ActivityFetcher("xx")

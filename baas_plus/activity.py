@@ -40,6 +40,11 @@ class GameEvent:
         return self.end_at >= time.time()
 
     @property
+    def is_sweepable(self) -> bool:
+        """是否需要扫荡活动关卡：仅常规活动（总力战/大决战/卡池不需要）"""
+        return self.event_type == EventType.EVENT
+
+    @property
     def key(self) -> str:
         """本地去重键：同类型+同 id"""
         return f"{self.event_type.value}:{self.id}"

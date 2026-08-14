@@ -75,13 +75,19 @@ def cmd_scan(config_path: str | None) -> int:
 
 
 def cmd_webui(config_path: str | None) -> int:
+    import threading
+    import webbrowser
+
     import uvicorn
 
     from .webui.app import create_app
 
     config = load_config(config_path)
     app = create_app(config)
-    print(f"WebUI: http://{config.webui.host}:{config.webui.port}")
+    url = f"http://127.0.0.1:{config.webui.port}"
+    print(f"WebUI: {url}")
+    # 延迟 1 秒等 uvicorn 起来后自动打开浏览器（0.0.0.0 绑定时用 127.0.0.1 访问）
+    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host=config.webui.host, port=config.webui.port)
     return 0
 

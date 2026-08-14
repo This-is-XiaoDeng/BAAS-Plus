@@ -141,6 +141,20 @@ class BaasBridge:
 
     # ---- 生命周期 ----
 
+    def check_baas(self) -> dict[str, Any]:
+        """轻量验证 BAAS：导入 + 配置加载 + 线程构造（不启动模拟器/OCR，供 WebUI 测试按钮）"""
+        Baas_thread, ConfigSet, _ = import_baas(self.config.baas.repo_dir)
+        config_set = ConfigSet(config_dir=self.config.baas.config_dir)
+        baas = Baas_thread(config_set, None, None, None)
+        version = getattr(baas, "version", None) or getattr(baas, "__version__", None)
+        logger.info("BAAS 检查通过: config_dir=%s server=%s version=%s", self.config.baas.config_dir, self.config.baas.server, version)
+        return {
+            "import": "ok",
+            "config_dir": self.config.baas.config_dir,
+            "server": self.config.baas.server,
+            "version": version,
+        }
+
     def stop(self) -> None:
         if self.baas_thread is not None:
             try:

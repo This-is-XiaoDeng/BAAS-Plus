@@ -58,8 +58,11 @@
     <button class="btn primary" onclick="saveConfig()">💾 保存配置</button>
     <button class="btn ghost" onclick="loadConfig()">↻ 重新加载</button>
     <button class="btn danger" onclick="runNow()">▶ 立即执行一次</button>
+    <button class="btn ghost" onclick="testSimulator()">🖥 测试模拟器</button>
+    <button class="btn ghost" onclick="testBaas()">🧪 测试 BAAS</button>
     <button class="btn ghost" onclick="testEmail()">✉ 测试邮件</button>
   </div>
+  <pre id="test_result" style="display:none; margin-bottom:16px;"></pre>
 
   <div class="grid">
     <div class="card">
@@ -287,6 +290,26 @@ async function testEmail() {
   catch (e) { toast('请求失败: ' + e.message, false); }
 }
 
+async function testSimulator() {
+  $('test_result').style.display = 'block';
+  $('test_result').textContent = '正在启动模拟器（可能需要几十秒）…';
+  try {
+    const r = await api('/api/test-simulator', { method: 'POST' });
+    $('test_result').textContent = '✅ ' + r.message;
+    toast('模拟器测试通过');
+  } catch (e) { $('test_result').textContent = '❌ ' + e.message; toast('模拟器测试失败', false); }
+}
+
+async function testBaas() {
+  $('test_result').style.display = 'block';
+  $('test_result').textContent = '正在验证 BAAS（导入 + 配置加载）…';
+  try {
+    const r = await api('/api/test-baas', { method: 'POST' });
+    $('test_result').textContent = `✅ BAAS 检查通过\n版本: ${r.version || '未知'}\n配置目录: ${r.config_dir}\n服务器: ${r.server}`;
+    toast('BAAS 测试通过');
+  } catch (e) { $('test_result').textContent = '❌ ' + e.message; toast('BAAS 测试失败', false); }
+}
+
 async function loadRecords() {
   try {
     const rows = await api('/api/records?limit=30');
@@ -302,14 +325,18 @@ async function loadActivities() {
     const data = await api('/api/activities');
     const seen = new Set(data.seen_keys);
     const now = Date.now() / 1000;
-    $('activity_box').innerHTML = data.current.length ? `
+    const render = (events, isSweepable) => events.length ? `
       <table><thead><tr><th>类型</th><th>标题</th><th>开始</th><th>结束</th><th>状态</th></tr></thead>
-      <tbody>${data.current.map(e => `
-        <tr><td>${e.event_type}</td><td>${e.title}</td>
+      <tbody>${events.map(e => `
+        <tr><td>${isSweepable ? '🎉 活动' : 'ℹ️ ' + e.event_type}</td><td>${e.title}</td>
         <td>${fmt(e.start_at)}</td><td>${fmt(e.end_at)}</td>
         <td>${seen.has(e.event_type + ':' + e.id) ? '<span class="tag info">已处理</span>' : '<span class="tag warn">🆕 新</span>'}
             ${e.end_at < now ? '<span class="tag info">已结束</span>' : ''}</td></tr>`).join('')}
-      </tbody></table>` : '<div class="loading">暂无活动</div>';
+      </tbody></table>` : '<div class="loading">无</div>';
+    const box = $('activity_box');
+    box.innerHTML =
+      '<div class="sub">🎯 可扫荡活动（决定「有活动优先扫活动」）</div>' + render(data.current, true) +
+      '<div class="sub" style="margin-top:14px;">ℹ️ 其他事件（总力战/大决战/卡池，无需扫荡，仅展示）</div>' + render(data.other, false);
   } catch (e) { $('activity_box').textContent = '加载失败: ' + e.message; }
 }
 
