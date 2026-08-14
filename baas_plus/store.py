@@ -97,6 +97,19 @@ class Store:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def reset_pushed(self, event_key: str | None = None) -> int:
+        """重置活动推送/推图标记（event_key 为空时重置全部），返回受影响行数"""
+        with self._lock:
+            if event_key:
+                cur = self._conn.execute(
+                    "UPDATE activities SET pushed = 0, pushed_at = NULL WHERE event_key = ?",
+                    (event_key,),
+                )
+            else:
+                cur = self._conn.execute("UPDATE activities SET pushed = 0, pushed_at = NULL")
+            self._conn.commit()
+            return cur.rowcount
+
     # ---- 执行记录 ----
 
     def add_record(self, status: str, summary: str, detail: dict | None = None) -> int:

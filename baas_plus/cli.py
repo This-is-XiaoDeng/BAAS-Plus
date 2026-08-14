@@ -5,6 +5,9 @@
     python -m baas_plus.cli webui          # 启动 WebUI（配置 + 执行记录）
     python -m baas_plus.cli scan           # 仅活动检测（打印新活动，不执行）
     python -m baas_plus.cli test-email     # 发送测试邮件
+    python -m baas_plus.cli test-ocr       # 调试：打印主页轮播图 OCR 原始文本
+    python -m baas_plus.cli reset-push     # 重置已推送/已推图的活动标记
+    python -m baas_plus.cli reset-push --key <key>  # 只重置指定活动
 """
 from __future__ import annotations
 
@@ -128,10 +131,34 @@ def cmd_test_ocr(config_path: str | None) -> int:
     return 0
 
 
+def cmd_reset_push(config_path: str | None, activity_key: str | None = None) -> int:
+    """重置已推送/已推图的活动标记（让活动重新触发推图）
+
+    用法：
+        python -m baas_plus.cli reset-push             # 重置全部
+        python -m baas_plus.cli reset-push --key <key>  # 只重置指定活动
+    """
+    config = load_config(config_path)
+    store = Store(config.data_path / "baas_plus.db")
+    rows = store.list_activities(limit=500)
+    pushed = [r for r in rows if r["pushed"]]
+    if not pushed:
+        print("没有已推送/已推图的活动记录")
+        return 0
+    print(f"共 {len(pushed)} 条已推送记录：")
+    for r in pushed:
+        mark = " <- 本次重置" if activity_key and r["event_key"] == activity_key else ""
+        print(f"  {r['event_key']}  {r['title']}{mark}")
+    n = store.reset_pushed(activity_key)
+    print(f"已重置 {n} 条活动推送标记，下次执行将重新触发推图")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="baas-plus", description="基于 BAAS 的蔚蓝档案自动化调度器")
-    parser.add_argument("command", choices=["run", "scan", "webui", "test-email", "test-ocr"])
+    parser.add_argument("command", choices=["run", "scan", "webui", "test-email", "test-ocr", "reset-push"])
     parser.add_argument("--config", default=None, help="配置文件路径（默认 data/config.json）")
+    parser.add_argument("--key", default=None, help="reset-push: 只重置指定活动 key")
     args = parser.parse_args(argv)
 
     if args.command == "run":
@@ -144,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_test_email(args.config)
     if args.command == "test-ocr":
         return cmd_test_ocr(args.config)
+    if args.command == "reset-push":
+        return cmd_reset_push(args.config, args.key)
     return 1
 
 

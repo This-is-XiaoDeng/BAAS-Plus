@@ -41,3 +41,27 @@ def test_mark_activity_idempotent(tmp_path):
     store.mark_activity_seen(e2, pushed=False)  # 不降级
     rows = store.list_activities()
     assert rows[0]["pushed"] == 1
+
+
+def test_reset_pushed_all_and_single(tmp_path):
+    """reset_pushed：全部重置 / 按 key 重置，pushed 标记清零"""
+    from baas_plus.activity import EventType, GameEvent
+    from baas_plus.store import Store
+
+    store = Store(tmp_path / "s.db")
+    e1 = GameEvent(id=1, title="A", start_at=100, end_at=200, event_type=EventType.EVENT)
+    e2 = GameEvent(id=2, title="B", start_at=100, end_at=200, event_type=EventType.EVENT)
+    store.mark_activity_seen(e1, pushed=True)
+    store.mark_activity_seen(e2, pushed=True)
+    assert all(r["pushed"] for r in store.list_activities())
+
+    # 按 key 重置
+    n = store.reset_pushed(e1.key)
+    assert n == 1
+    rows = {r["event_key"]: r["pushed"] for r in store.list_activities()}
+    assert rows[e1.key] == 0 and rows[e2.key] == 1
+
+    # 全部重置（SQLite rowcount 统计匹配行数，同值更新也计入）
+    n = store.reset_pushed()
+    assert n == 2
+    assert all(r["pushed"] == 0 for r in store.list_activities())

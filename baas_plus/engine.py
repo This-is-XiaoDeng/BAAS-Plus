@@ -241,6 +241,11 @@ class Engine:
         BAAS 的 to_activity 点击硬编码坐标 (1196,195) 进入的是轮播图当前页的活动，
         因此必须先确认轮播图显示的是目标活动，再让 BAAS 进入。
         """
+        logger.info(
+            "等待轮播图到目标活动: module=%s keywords=%s（模板匹配优先，OCR 兜底）",
+            module,
+            keywords,
+        )
         start = time.time()
         last_text = ""
         while time.time() - start < timeout:
@@ -255,7 +260,7 @@ class Engine:
                 if any(self._fuzzy_contains(text, kw) for kw in keywords):
                     logger.info("轮播图 OCR 识别到目标活动（%s）", text)
                     return True
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
         logger.warning(
             "轮播图等待超时（%.0fs），未识别到目标活动关键词 %s；最近一次 OCR 文本: %r",
             timeout,
