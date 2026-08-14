@@ -99,9 +99,38 @@ def cmd_test_email(config_path: str | None) -> int:
     return 0 if ok else 1
 
 
+def cmd_test_ocr(config_path: str | None) -> int:
+    """调试：启动模拟器/BAAS 后对主页轮播图区域做一次 OCR，打印原始识别文本
+
+    用于排查"轮播图 OCR 识别不出东西"：
+    - 空输出 + 日志无 OCR 行 → 预处理/OCR 服务链路问题
+    - 有输出但都是 l/1/o/0 等非中文字符 → 艺术字识别偏差（匹配层会兜底）
+    """
+    import time
+
+    config = load_config(config_path)
+    from .baas_bridge import BaasBridge
+
+    logger.info("启动模拟器（用于取截图）...")
+    bridge = BaasBridge(config)
+    adb = bridge.start_simulator()
+    bridge.create_baas(adb)
+    # 等模拟器就绪 + 游戏画面稳定（若游戏未启动，先启动到主页）
+    bridge.launch_game()
+    for i in range(1, 7):
+        time.sleep(2)
+        text = bridge.ocr_banner()
+        print(f"\n=== 第 {i} 次 OCR（每 2s 一次，轮播图自动换页时文本会变）===")
+        print(f"原始识别文本: {text!r}")
+        if not text:
+            print("(空输出：OCR 没吐任何字符)")
+    bridge.stop()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="baas-plus", description="基于 BAAS 的蔚蓝档案自动化调度器")
-    parser.add_argument("command", choices=["run", "scan", "webui", "test-email"])
+    parser.add_argument("command", choices=["run", "scan", "webui", "test-email", "test-ocr"])
     parser.add_argument("--config", default=None, help="配置文件路径（默认 data/config.json）")
     args = parser.parse_args(argv)
 
@@ -113,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_webui(args.config)
     if args.command == "test-email":
         return cmd_test_email(args.config)
+    if args.command == "test-ocr":
+        return cmd_test_ocr(args.config)
     return 1
 
 

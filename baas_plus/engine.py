@@ -203,11 +203,20 @@ class Engine:
 
     @staticmethod
     def _fuzzy_contains(ocr_text: str, keyword: str) -> bool:
-        """keyword 是否近似出现在 OCR 文本中（滑动窗口 SequenceMatcher，容 OCR 错字）"""
+        """keyword 是否近似出现在 OCR 文本中
+
+        三层匹配：整词包含 → 单字命中率（艺术字常错字/漏字，≥60% 单字出现
+        即命中）→ 滑动窗口 SequenceMatcher（容 OCR 错字）。
+        """
         if not ocr_text or not keyword:
             return False
         if keyword in ocr_text:
             return True
+        kw_chars = [c for c in keyword if c.strip()]
+        if len(kw_chars) >= 2:
+            hit = sum(1 for c in kw_chars if c in ocr_text)
+            if hit / len(kw_chars) >= 0.6:
+                return True
         n = len(keyword)
         if n < 2 or len(ocr_text) < n:
             return False
@@ -227,16 +236,20 @@ class Engine:
         因此必须先确认轮播图显示的是目标活动，再让 BAAS 进入。
         """
         start = time.time()
+        last_text = ""
         while time.time() - start < timeout:
             text = self.bridge.ocr_banner()
-            if text and any(self._fuzzy_contains(text, kw) for kw in keywords):
-                logger.info("轮播图 OCR 识别到目标活动（%s）", text)
-                return True
+            if text:
+                last_text = text
+                if any(self._fuzzy_contains(text, kw) for kw in keywords):
+                    logger.info("轮播图 OCR 识别到目标活动（%s）", text)
+                    return True
             await asyncio.sleep(2)
         logger.warning(
-            "轮播图等待超时（%.0fs），未识别到目标活动关键词 %s，跳过活动扫荡",
+            "轮播图等待超时（%.0fs），未识别到目标活动关键词 %s；最近一次 OCR 文本: %r",
             timeout,
             keywords,
+            last_text,
         )
         return False
 

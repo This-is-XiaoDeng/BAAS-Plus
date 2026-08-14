@@ -323,15 +323,53 @@ class BaasBridge:
         return module_name in self.list_activity_modules()
 
     def ocr_banner(self) -> str:
-        """OCR 主页轮播图区域文字（复用 BAAS 的 zh-cn OCR）；失败返回空串"""
+        """OCR 主页轮播图区域文字（复用 BAAS 的 zh-cn OCR）；失败返回空串
+
+        优化点：
+        1. OCR 前先刷新截图——BAAS 的 OCR 读 latest_img_array 缓存帧，不刷新
+           会识别旧画面（甚至 None），导致"识别不出东西"
+        2. 区域裁剪后放大 2x + CLAHE 增强再识别（艺术字/小字号识别率低）
+        3. 返回原始识别文本，不做 is_chinese_char 中文过滤——艺术字常被识别
+           成 l/1/o/0 等非中文字符，纯中文过滤会把结果滤光成空串
+        """
         if self.baas_thread is None or self.baas_thread.ocr is None:
             return ""
         region = tuple(self.config.baas.banner_region or [1109, 133, 1280, 281])
         try:
-            text = self.baas_thread.ocr.get_region_pure_chinese(
-                self.baas_thread, region
+            update = getattr(self.baas_thread, "update_screenshot_array", None)
+            if callable(update):
+                update()
+            img = getattr(self.baas_thread, "latest_img_array", None)
+            if img is None:
+                logger.warning("轮播图 OCR 跳过：无截图帧")
+                return ""
+            ratio = getattr(self.baas_thread, "ratio", 1.0) or 1.0
+            crop = img[
+                int(region[1] * ratio) : int(region[3] * ratio),
+                int(region[0] * ratio) : int(region[2] * ratio),
+            ]
+            if crop.size == 0:
+                return ""
+            import cv2
+
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+            gray = cv2.resize(
+                gray,
+                (gray.shape[1] * 2, gray.shape[0] * 2),
+                interpolation=cv2.INTER_CUBIC,
             )
-            return text or ""
+            gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+            text = self.baas_thread.ocr.ocr_for_single_line(
+                language="zh-cn",
+                log_info="banner",
+                origin_image=gray,
+                pass_method=1,
+                shared_memory_name="",
+                _logger=getattr(self.baas_thread, "logger", None),
+            )
+            text = text or ""
+            logger.info("轮播图 OCR 原始文本: %r", text)
+            return text
         except Exception as exc:  # noqa: BLE001
             logger.warning("OCR 轮播图区域失败: %s", exc)
             return ""

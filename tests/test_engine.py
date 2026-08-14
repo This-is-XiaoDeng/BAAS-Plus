@@ -437,6 +437,14 @@ async def test_banner_fuzzy_match_tolerates_ocr_errors(tmp_path):
         "笑笑闹闹", "走走绕绕",
     ]
 
+    # 艺术字场景：单字命中率匹配（OCR 错字/漏字多，多数单字出现即命中）
+    assert Engine._fuzzy_contains("笑笑闹闹", "笑笑闹闹")  # 整词
+    assert Engine._fuzzy_contains("笑闹闹", "笑笑闹闹")  # 漏 1 字：3/4 单字命中
+    assert Engine._fuzzy_contains("笑笑司闹", "笑笑闹闹")  # 闹→司 错字：3/4 单字命中
+    assert not Engine._fuzzy_contains("海文迪铁道失控", "笑笑闹闹")  # 单字不重叠
+    # 非中文乱码（l/1/o/0）不应误命中纯中文关键词
+    assert not Engine._fuzzy_contains("111000", "笑笑闹闹")
+
 
 @pytest.mark.asyncio
 async def test_collect_reward_after_all_tasks(tmp_path):
