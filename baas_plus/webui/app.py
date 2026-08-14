@@ -50,7 +50,20 @@ def create_app(config: AppConfig) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"配置校验失败: {exc}") from exc
         save_config(config)
-        return {"ok": True}
+        # 「模拟器&BAAS」设置更新后：从 BAAS 配置同步扫荡列表（普通/困难图为空时填充）
+        # 并应用 BA 游戏包名；BAAS 不可用时不影响保存
+        sync = None
+        if config.baas.repo_dir:
+            try:
+                from ..baas_bridge import BaasBridge, import_baas
+
+                bridge = BaasBridge(config)
+                sync = bridge.sync_sweep_from_baas()
+                if sync.get("applied"):
+                    save_config(config)
+            except Exception as exc:  # noqa: BLE001
+                sync = {"ok": False, "reason": str(exc)}
+        return {"ok": True, "sync": sync}
 
     @app.get("/api/tasks")
     def get_tasks() -> list[dict[str, str]]:

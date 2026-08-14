@@ -63,6 +63,7 @@ schtasks /create /tn "BAAS-Plus-Daily" /tr "D:\BAAS\run.bat" /sc daily /st 05:00
 
 - **模拟器**：类型（mumu/雷电/蓝叠等）与多开编号
 - **任务**：勾选要执行的日常任务（咖啡厅、课程表、邮件、竞技场等）
+- **扫荡**：扫荡列表留空时自动从 BAAS 配置（mainlinePriority/hardPriority）读取；保存「模拟器&BAAS」设置后自动同步并显示
 - **活动**：新活动自动推图开关，活动数据源选择
 - **扫荡**：策略（`auto` 按体力算次数 / `fixed` 固定次数）、扫荡列表、活动关卡号
 - **通知**：SMTP 服务器、邮箱账号、授权码、收件人

@@ -87,6 +87,7 @@
         <option value="in">国际服 in</option>
         <option value="jp">日服 jp</option>
       </select>
+      <label>BA 游戏包名</label><input id="baas_game_package" value="com.RoamingStar.BlueArchive" placeholder="com.RoamingStar.BlueArchive">
       <label>手动指定活动模块（可选，自动映射未实现时使用）</label><input id="baas_current_activity" placeholder="如 SayBing">
     </div>
 
@@ -186,6 +187,7 @@ async function loadConfig() {
   $('baas_repo_dir').value = cfg.baas.repo_dir;
   await loadConfigDirs(cfg.baas.config_dir);
   $('baas_server').value = cfg.baas.server;
+  $('baas_game_package').value = cfg.baas.game_package_name || 'com.RoamingStar.BlueArchive';
   $('baas_current_activity').value = cfg.baas.current_activity;
   $('act_push_story').checked = cfg.activity.push_story_on_new;
   $('act_push_mission').checked = cfg.activity.push_mission_on_new;
@@ -254,6 +256,7 @@ function collectConfig() {
       repo_dir: $('baas_repo_dir').value.trim(),
       config_dir: $('baas_config_dir').value.trim() || 'default',
       server: $('baas_server').value,
+      game_package_name: $('baas_game_package').value.trim() || 'com.RoamingStar.BlueArchive',
       current_activity: $('baas_current_activity').value.trim(),
       tasks: checked,
     },
@@ -292,8 +295,17 @@ function collectConfig() {
 
 async function saveConfig() {
   try {
-    cfg = await api('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collectConfig()) });
-    toast('配置已保存');
+    const r = await api('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collectConfig()) });
+    let msg = '配置已保存';
+    if (r.sync) {
+      if (r.sync.ok) {
+        const n = (r.sync.normal_tasks || []).length, h = (r.sync.hard_tasks || []).length;
+        msg += `（已从 BAAS 同步扫荡列表：普通 ${n} 项、困难 ${h} 项${r.sync.applied ? '，已填入配置' : ''}）`;
+      } else {
+        msg += '（BAAS 扫荡同步失败: ' + (r.sync.reason || '未知原因') + '）';
+      }
+    }
+    toast(msg);
   } catch (e) { toast('保存失败: ' + e.message, false); }
 }
 

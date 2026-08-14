@@ -43,3 +43,17 @@ def test_data_path_absolute(tmp_path):
 def test_tasks_list_nonempty():
     assert "cafe_reward" in BAAS_TASKS
     assert "activity_sweep" in BAAS_TASKS
+
+
+def test_game_package_name_default():
+    """BA 游戏包名默认值 = 国服官服包名"""
+    config = AppConfig()
+    assert config.baas.game_package_name == "com.RoamingStar.BlueArchive"
+
+
+def test_game_package_name_roundtrip(tmp_path):
+    config = AppConfig()
+    config.baas.game_package_name = "com.custom.bluearchive"
+    path = save_config(config, str(tmp_path / "config.json"))
+    loaded = load_config(str(path))
+    assert loaded.baas.game_package_name == "com.custom.bluearchive"

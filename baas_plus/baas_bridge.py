@@ -219,6 +219,7 @@ class BaasBridge:
         if adb_address:
             baas.set_adb_address(adb_address) if hasattr(baas, "set_adb_address") else None
         self.baas_thread = baas
+        self.apply_game_package()
         return baas
 
     def solve(self, task: str) -> Any:
@@ -299,12 +300,64 @@ class BaasBridge:
         config_set = ConfigSet(config_dir=self.config.baas.config_dir)
         baas = Baas_thread(config_set, None, None, None)
         version = getattr(baas, "version", None) or getattr(baas, "__version__", None)
+        self.apply_game_package()
         logger.info("BAAS 检查通过: config_dir=%s server=%s version=%s", self.config.baas.config_dir, self.config.baas.server, version)
         return {
             "import": "ok",
             "config_dir": self.config.baas.config_dir,
             "server": self.config.baas.server,
             "version": version,
+        }
+
+    # ---- BA 游戏包名 ----
+
+    def apply_game_package(self, package_name: str | None = None) -> None:
+        """将 BA 游戏包名写入 BAAS 共享 static_config（按当前服务器覆盖），供 restart/包检测使用
+
+        覆盖时机：check_baas / create_baas 之后调用，后续所有 ConfigSet 实例共享生效。
+        """
+        import_baas(self.config.baas.repo_dir)
+        from core.config.config_set import ConfigSet
+
+        pkg = package_name or self.config.baas.game_package_name
+        if not pkg:
+            return
+        static = getattr(ConfigSet, "static_config", None)
+        if static is None or not hasattr(static, "package_name"):
+            logger.warning("BAAS static_config 未初始化或无 package_name，跳过包名设置")
+            return
+        # 先初始化一次 ConfigSet 拿 server（如 "官服"/"国际服"/"日服"）
+        config_set = ConfigSet(config_dir=self.config.baas.config_dir)
+        server = str(config_set.get("server") or "")
+        if not server or server not in static.package_name:
+            logger.warning("BAAS server=%r 不在 package_name 映射中，跳过包名设置", server)
+            return
+        static.package_name[server] = pkg
+        logger.info("已设置 BA 包名: server=%s package=%s", server, pkg)
+
+    def sync_sweep_from_baas(self) -> dict[str, Any]:
+        """从 BAAS 配置读取扫荡列表并同步到 BAAS-Plus 配置（普通/困难图为空时填充）
+
+        供 WebUI 保存「模拟器&BAAS」设置后调用；返回同步结果供前端提示。
+        """
+        if not self.config.baas.repo_dir:
+            return {"ok": False, "reason": "baas.repo_dir 为空，无法读取 BAAS 配置"}
+        self.check_baas()  # 初始化 ConfigSet/Baas_thread（含配置自愈）
+        baas_cfg = self.get_baas_sweep_config()
+        normal = [s.strip() for s in str(baas_cfg.get("mainlinePriority", "")).split(",") if s.strip()]
+        hard = [s.strip() for s in str(baas_cfg.get("hardPriority", "")).split(",") if s.strip()]
+        changed = False
+        if not self.config.sweep.normal_tasks and normal:
+            self.config.sweep.normal_tasks = normal
+            changed = True
+        if not self.config.sweep.hard_tasks and hard:
+            self.config.sweep.hard_tasks = hard
+            changed = True
+        return {
+            "ok": True,
+            "normal_tasks": normal,
+            "hard_tasks": hard,
+            "applied": changed,
         }
 
     def stop(self) -> None:

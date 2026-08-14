@@ -97,6 +97,8 @@ class BaasConfig(BaseModel):
     config_dir: str = "cn"
     # 服务器：cn / in / jp（影响活动数据与 BAAS 内部判断）
     server: Literal["cn", "in", "jp"] = "cn"
+    # BA 游戏包名（覆盖 BAAS 内置服务器→包名映射；默认国服官服）
+    game_package_name: str = "com.RoamingStar.BlueArchive"
     # 勾选要执行的任务（顺序执行）
     tasks: list[str] = Field(
         default_factory=lambda: [
