@@ -47,15 +47,27 @@ python -m baas_plus.cli test-email  # 测试邮件通知
 
 ```bat
 @echo off
-cd /d D:\BAAS
-python -m baas_plus.cli run
+cd /d E:\BAA-Script
+E:\BAA-Script\.venv\Scripts\python.exe -m baas_plus.cli run
 ```
+
+> ⚠️ `cd /d` 到 BAAS 根目录是必须的（BAAS 用相对路径读 `config/`）；`.bat` 与任务计划程序都建议用 Python 完整路径。
 
 注册每天 05:00 自动执行：
 
 ```
-schtasks /create /tn "BAAS-Plus-Daily" /tr "D:\BAAS\run.bat" /sc daily /st 05:00
+schtasks /create /tn "BAAS-Plus-Daily" /tr "E:\BAA-Script\run.bat" /sc daily /st 05:00
 ```
+
+**或用图形界面（任务计划程序向导）**：
+
+1. `Win+R` → `taskschd.msc` → 右侧「创建基本任务…」
+2. 触发器：每天 → 时间（建议体力重置后，如 04:05）
+3. 操作：启动程序 →
+   - 程序/脚本：`E:\BAA-Script\.venv\Scripts\python.exe`
+   - 添加参数：`-m baas_plus.cli run`
+   - 起始于：`E:\BAA-Script`
+4. 完成后双击任务 → 「条件」取消勾选「只有在计算机使用交流电源时才启动任务」（笔记本必改）；「设置」可设「运行超过 3 小时停止任务」防卡死
 
 ## 🖥 WebUI 配置
 

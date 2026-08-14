@@ -92,8 +92,27 @@
     </div>
 
     <div class="card">
+      <h2>⏰ 定时执行指引（Windows 任务计划程序）</h2>
+      <details>
+        <summary>点击展开：创建每日定时任务的完整步骤</summary>
+        <ol style="margin:10px 0 0 18px;padding:0">
+          <li>按 <code>Win+R</code> 输入 <code>taskschd.msc</code> 回车，打开「任务计划程序」</li>
+          <li>右侧点「创建基本任务…」→ 名称随意（如 BAAS-Plus 每日）</li>
+          <li>触发器：选「每天」→ 设置执行时间（建议游戏体力重置后，如 04:05）</li>
+          <li>操作：选「启动程序」</li>
+          <li>「程序或脚本」填 Python 完整路径，例如：<br><code id="sched_program">E:\BAA-Script\.venv\Scripts\python.exe</code></li>
+          <li>「添加参数」填：<br><code id="sched_args">-m baas_plus.cli run</code></li>
+          <li>「起始于」填 BAAS 根目录（必须，BAAS 依赖相对路径读 config/）：<br><code id="sched_cwd">E:\BAA-Script</code></li>
+          <li>点「完成」后，在任务列表双击该任务 → 「条件」页：取消勾选「只有在计算机使用交流电源时才启动任务」（笔记本必改），「设置」页可勾选「如果任务运行时间超过以下时间，停止任务」设 3 小时防卡死</li>
+        </ol>
+        <p class="hint">说明：<code>run</code> 会执行完整流程（开模拟器 → 活动检测 → 任务 → 扫荡 → 邮件通知）。<br>若 BAAS-Plus 配置不在默认位置，参数改为 <code>-m baas_plus.cli run --config D:\BAAS-Plus\data\config.json</code>。</p>
+      </details>
+    </div>
+
+    <div class="card">
       <h2>勾选任务（顺序执行）</h2>
       <div class="chk" id="task_list"></div>
+      <p class="hint">扫荡类任务（普通/困难/活动扫荡）不在此列表，由「扫荡策略」统一按剩余体力调度。</p>
     </div>
 
     <div class="card">

@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..activity import ActivityFetcher
-from ..config import AppConfig, BAAS_TASKS, TASK_LABELS, load_config, save_config
+from ..config import AppConfig, BAAS_TASKS, SWEEP_TASKS, TASK_LABELS, load_config, save_config
 from ..engine import Engine
 from ..notifier import EmailNotifier
 from ..store import Store
@@ -67,8 +67,12 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.get("/api/tasks")
     def get_tasks() -> list[dict[str, str]]:
-        """可勾选任务列表（含中文名）"""
-        return [{"name": t, "label": TASK_LABELS.get(t, t)} for t in BAAS_TASKS]
+        """可勾选任务列表（含中文名）；扫荡类任务由扫荡阶段统一调度，不在列表中显示"""
+        return [
+            {"name": t, "label": TASK_LABELS.get(t, t)}
+            for t in BAAS_TASKS
+            if t not in SWEEP_TASKS
+        ]
 
     @app.get("/api/baas-config-dirs")
     def get_baas_config_dirs() -> list[str]:
