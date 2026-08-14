@@ -113,8 +113,6 @@ class BaasConfig(BaseModel):
     )
     # 手动指定 BAAS 活动模块名（对应 module/activities/<name>.py）；留空则由引擎从活动数据自动推断
     current_activity: str = ""
-    # DeepLX 翻译服务地址（用于把纯中文活动标题翻译成英文后匹配 BAAS 模块名）；留空禁用
-    deeplx_url: str = "http://127.0.0.1:1188"
 
 
 class ActivityConfig(BaseModel):

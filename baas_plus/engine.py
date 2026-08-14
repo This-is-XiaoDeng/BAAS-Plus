@@ -20,8 +20,6 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-import httpx
-
 from .activity import ACTIVITY_MODULE_ALIASES, ActivityFetcher, EventType, GameEvent
 from .baas_bridge import BaasBridge, compute_sweep_times
 from .config import AppConfig, SWEEP_TASKS
@@ -32,9 +30,6 @@ logger = logging.getLogger(__name__)
 
 # 领取类任务：在所有任务（含 arena）执行完成后执行
 AFTER_ALL_TASKS = ("collect_reward",)
-
-# DeepL 免费接口限流冷却时间（秒）：503 后一段时间内不再请求翻译
-deeplx_cooldown = 600
 
 if TYPE_CHECKING:
     from .store import Store as StoreType
@@ -153,54 +148,9 @@ class Engine:
         for event in events:
             if event.event_type == EventType.EVENT and event.start_at <= now <= event.end_at:
                 matched = self._match_activity_module(event.title, modules)
-                via = None
-                if not matched:
-                    translated = await self._translate_title(event.title)
-                    if translated:
-                        matched = self._match_translated_en(translated, modules)
-                        via = "DeepLX 翻译"
                 if matched:
-                    suffix = f"（{via}）" if via else ""
-                    logger.info("活动扫荡选中模块%s: 「%s」 → %s", suffix, event.title, matched)
+                    logger.info("活动扫荡选中模块: 「%s」 → %s", event.title, matched)
                     return matched
-        return None
-
-    async def _translate_title(self, title: str) -> str | None:
-        """DeepLX 翻译标题为英文；失败/限流返回 None（不阻断流程）"""
-        url = (self.config.baas.deeplx_url or "").strip()
-        if not url:
-            return None
-        if time.time() < getattr(self, "_deeplx_cooldown_until", 0):
-            return None
-        try:
-            async with httpx.AsyncClient(timeout=8) as client:
-                resp = await client.post(
-                    url.rstrip("/") + "/translate",
-                    json={"text": title, "target_lang": "EN"},
-                )
-                payload = resp.json()
-            if resp.status_code == 503 or payload.get("code") == 503:
-                self._deeplx_cooldown_until = time.time() + deeplx_cooldown
-                logger.warning("DeepLX 被 DeepL 限流，%s 秒内不再尝试翻译", deeplx_cooldown)
-                return None
-            data = payload.get("data")
-            if isinstance(data, str) and data.strip():
-                return data.strip()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("DeepLX 翻译失败: %s", exc)
-        return None
-
-    @staticmethod
-    def _match_translated_en(en_text: str, modules: list[str]) -> str | None:
-        """对 DeepLX 翻译后的英文文本做模块名匹配（英文关键词子串匹配）"""
-        words = re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", en_text)
-        norm_words = {w.lower() for w in words}
-        if not norm_words:
-            return None
-        for mod in modules:
-            mn = mod.lower()
-            if any(w in mn for w in norm_words):
-                return mod
         return None
 
     @staticmethod
