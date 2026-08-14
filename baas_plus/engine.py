@@ -18,6 +18,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any
 
 from .activity import ACTIVITY_MODULE_ALIASES, ActivityFetcher, EventType, GameEvent
@@ -137,8 +138,8 @@ class Engine:
 
     # ---- 扫荡 ----
 
-    async def _select_sweep_activity(self) -> str | None:
-        """选择要扫荡的活动模块
+    async def _select_sweep_activity(self) -> tuple[str, str | None] | None:
+        """选择要扫荡的活动；返回 (模块名, 活动标题)，标题用于轮播图 OCR 关键词
 
         优先级：手动配置 current_activity > GameKee 进行中的活动启发式匹配
         （标题英文关键词 ↔ BAAS 模块名）。全部失败返回 None（跳过活动扫荡，
@@ -147,7 +148,7 @@ class Engine:
         if self.config.baas.current_activity:
             manual = self.config.baas.current_activity
             if self.bridge.activity_module_available(manual):
-                return manual
+                return manual, None
             logger.warning(
                 "手动配置的活动模块 %s 不在当前服资源白名单（缺少 BAAS 截图模板），"
                 "跳过活动扫荡",
@@ -165,7 +166,7 @@ class Engine:
                 matched = self._match_activity_module(event.title, modules)
                 if matched:
                     logger.info("活动扫荡选中模块: 「%s」 → %s", event.title, matched)
-                    return matched
+                    return matched, event.title
         return None
 
     @staticmethod
@@ -187,6 +188,57 @@ class Engine:
             if keyword in title and mod in modules:
                 return mod
         return None
+
+    @staticmethod
+    def _banner_keywords(title: str) -> list[str]:
+        """从活动标题提取轮播图 OCR 关键词（人工映射 key + 连续中文片段）"""
+        kws: list[str] = []
+        for kw in ACTIVITY_MODULE_ALIASES:
+            if kw in title:
+                kws.append(kw)
+        cleaned = re.sub(r"[【】\[\]()（）复刻活动]", "", title or "")
+        for w in re.findall(r"[\u4e00-\u9fff]{2,4}", cleaned):
+            kws.append(w)
+        return list(dict.fromkeys(kws))
+
+    @staticmethod
+    def _fuzzy_contains(ocr_text: str, keyword: str) -> bool:
+        """keyword 是否近似出现在 OCR 文本中（滑动窗口 SequenceMatcher，容 OCR 错字）"""
+        if not ocr_text or not keyword:
+            return False
+        if keyword in ocr_text:
+            return True
+        n = len(keyword)
+        if n < 2 or len(ocr_text) < n:
+            return False
+        best = 0.0
+        for i in range(len(ocr_text) - n + 1):
+            ratio = SequenceMatcher(None, ocr_text[i : i + n], keyword).ratio()
+            if ratio > best:
+                best = ratio
+        return best >= 0.6
+
+    async def _wait_for_activity_banner(
+        self, keywords: list[str], timeout: float = 90.0
+    ) -> bool:
+        """等待主页轮播图自动换页到目标活动；OCR 轮询 + 模糊匹配
+
+        BAAS 的 to_activity 点击硬编码坐标 (1196,195) 进入的是轮播图当前页的活动，
+        因此必须先确认轮播图显示的是目标活动，再让 BAAS 进入。
+        """
+        start = time.time()
+        while time.time() - start < timeout:
+            text = self.bridge.ocr_banner()
+            if text and any(self._fuzzy_contains(text, kw) for kw in keywords):
+                logger.info("轮播图 OCR 识别到目标活动（%s）", text)
+                return True
+            await asyncio.sleep(2)
+        logger.warning(
+            "轮播图等待超时（%.0fs），未识别到目标活动关键词 %s，跳过活动扫荡",
+            timeout,
+            keywords,
+        )
+        return False
 
     def has_active_activity(self) -> bool:
         """本地状态中是否存在进行中的活动类事件"""
@@ -233,15 +285,24 @@ class Engine:
 
         if self.config.sweep.activity_first:
             # 活动扫荡：-1 = BAAS 按当前 AP 自动计算最大次数
-            module = await self._select_sweep_activity()
-            if module:
+            selected = await self._select_sweep_activity()
+            if selected:
+                module, title = selected
                 self.bridge.set_current_activity(module)
                 self.bridge.set_activity_sweep(
                     self.config.sweep.activity_task_number, times="-1"
                 )
-                self.bridge.solve("activity_sweep")
-                swept.append(f"activity:{self.config.sweep.activity_task_number}(auto,{module})")
-                ap = self.bridge.get_ap()
+                # 轮播图导航：BAAS 点 enter 进入的是轮播图当前页的活动，
+                # 先等自动换页到目标活动（OCR 确认）再让 BAAS 进入
+                keywords = self._banner_keywords(title) if title else []
+                if keywords and not await self._wait_for_activity_banner(keywords):
+                    logger.warning("轮播图未就绪，跳过活动扫荡「%s」", title)
+                else:
+                    self.bridge.solve("activity_sweep")
+                    swept.append(
+                        f"activity:{self.config.sweep.activity_task_number}(auto,{module})"
+                    )
+                    ap = self.bridge.get_ap()
             else:
                 logger.warning(
                     "活动优先已开启，但无法确定进行中活动的 BAAS 模块，跳过活动扫荡"

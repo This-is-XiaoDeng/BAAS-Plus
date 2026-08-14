@@ -113,6 +113,8 @@ class BaasConfig(BaseModel):
     )
     # 手动指定 BAAS 活动模块名（对应 module/activities/<name>.py）；留空则由引擎从活动数据自动推断
     current_activity: str = ""
+    # 主页活动轮播图区域（1280x720 分辨率下的 [x1, y1, x2, y2]，用于 OCR 识别当前横幅）
+    banner_region: list[int] = Field(default_factory=lambda: [1109, 133, 1280, 281])
 
 
 class ActivityConfig(BaseModel):

@@ -322,6 +322,20 @@ class BaasBridge:
         """模块是否在当前服资源白名单内（防止选了缺模板的活动导致 BAAS 崩溃）"""
         return module_name in self.list_activity_modules()
 
+    def ocr_banner(self) -> str:
+        """OCR 主页轮播图区域文字（复用 BAAS 的 zh-cn OCR）；失败返回空串"""
+        if self.baas_thread is None or self.baas_thread.ocr is None:
+            return ""
+        region = tuple(self.config.baas.banner_region or [1109, 133, 1280, 281])
+        try:
+            text = self.baas_thread.ocr.get_region_pure_chinese(
+                self.baas_thread, region
+            )
+            return text or ""
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("OCR 轮播图区域失败: %s", exc)
+            return ""
+
     def set_sweep_tasks(self, normal_tasks: list[str], hard_tasks: list[str]) -> None:
         """设置普通/困难图扫荡列表（mainlinePriority / hardPriority，格式 region-mission-counts）
 
