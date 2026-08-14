@@ -242,9 +242,11 @@ class Engine:
                     pushed = self.push_new_activity(event)
                     self.result.pushed_activities.extend(pushed)
 
-            # 3. 启动游戏并确保在主界面（BAAS 官方主循环的第一步 restart）
+            # 3. BAAS-Plus 用配置的 BA 包名显式启动游戏并进入主界面
+            # （不走裸 solve('restart')：BA 已在前台时 restart 不会 to_main_page；
+            #  launch_game = app_start(配置包名) + to_main_page，包名配置真正生效）
             try:
-                self.bridge.solve("restart")
+                self.bridge.launch_game()
                 self.result.executed_tasks.append("restart")
             except Exception as exc:  # noqa: BLE001
                 logger.error("启动游戏失败: %s", exc)

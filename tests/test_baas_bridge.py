@@ -9,6 +9,16 @@ from baas_plus.baas_bridge import BaasBridge
 from baas_plus.config import AppConfig
 
 
+class FakeU2:
+    """模拟 uiautomator2 连接：记录 app_start 调用"""
+
+    def __init__(self):
+        self.last_start = None
+
+    def app_start(self, package_name, activity=None):
+        self.last_start = (package_name, activity)
+
+
 class FakeBaasThread:
     """记录调用顺序的假 Baas_thread"""
 
@@ -17,6 +27,10 @@ class FakeBaasThread:
         self.calls: list[str] = []
         self.ocr = None
         self.ocr_img_pass_method = None
+        self.package_name = "com.RoamingStar.BlueArchive"
+        self.server = "CN"
+        self.activity_name = None
+        self.u2 = FakeU2()
 
     def set_ocr(self, ocr):
         self.calls.append("set_ocr")
@@ -28,6 +42,9 @@ class FakeBaasThread:
 
     def set_adb_address(self, addr):
         self.calls.append("set_adb_address")
+
+    def to_main_page(self):
+        self.calls.append("to_main_page")
 
     def solve(self, task):
         return True
@@ -69,7 +86,20 @@ def test_create_baas_sets_ocr_before_init(bridge):
 
 def test_create_baas_apply_game_package(bridge):
     baas = bridge.create_baas()
-    # static_config.package_name["官服"] 应被覆盖为配置的包名
-    sc = bridge.apply_game_package.__self__  # noqa: F841
     config_set = baas.config_set
     assert config_set.static_config.package_name["官服"] == "com.RoamingStar.BlueArchive"
+    # Baas_thread.package_name 应同步为配置包名（restart/launch_game 实际使用值）
+    assert baas.package_name == "com.RoamingStar.BlueArchive"
+
+
+def test_launch_game_uses_configured_package(bridge):
+    bridge.create_baas()
+    bridge.config.baas.game_package_name = "com.custom.bluearchive"
+    bridge.launch_game()
+    u2 = bridge.baas_thread.u2
+    # BAAS-Plus 用配置的包名显式启动 BA（CN 服 activity=None）
+    assert u2.last_start == ("com.custom.bluearchive", None)
+    # 启动后进入主界面
+    assert "to_main_page" in bridge.baas_thread.calls
+    # 同步后的 Baas_thread.package_name
+    assert bridge.baas_thread.package_name == "com.custom.bluearchive"

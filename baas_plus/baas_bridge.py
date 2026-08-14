@@ -337,7 +337,33 @@ class BaasBridge:
             logger.warning("BAAS server=%r 不在 package_name 映射中，跳过包名设置", server)
             return
         static.package_name[server] = pkg
+        # Baas_thread.package_name 在 init_all_data 时已从 static_config 拷贝，
+        # 这里同步更新，确保 solve('restart') / launch_game 用新包名
+        if self.baas_thread is not None:
+            self.baas_thread.package_name = pkg
         logger.info("已设置 BA 包名: server=%s package=%s", server, pkg)
+
+    def launch_game(self) -> None:
+        """用配置的 BA 包名显式启动游戏并等待进入主界面（BAAS-Plus 负责打开 BA）
+
+        替代裸 solve('restart')：restart 的包检测逻辑在 BA 已在前台时不会
+        to_main_page；这里直接 app_start(配置包名) 并复用 BAAS 的 to_main_page
+        处理启动画面/弹窗。
+        """
+        if self.baas_thread is None:
+            raise RuntimeError("Baas_thread 未初始化，请先调用 create_baas()")
+        baas = self.baas_thread
+        self.apply_game_package()
+        if getattr(baas, "u2", None) is None:
+            raise RuntimeError("设备连接未就绪（u2 未初始化），无法启动游戏")
+        pkg = self.config.baas.game_package_name
+        activity = None
+        server = getattr(baas, "server", None)
+        if server and server != "CN" and getattr(baas, "activity_name", None):
+            activity = baas.activity_name
+        baas.u2.app_start(pkg, activity)
+        logger.info("BAAS-Plus 启动游戏: package=%s activity=%s server=%s", pkg, activity, server)
+        baas.to_main_page()
 
     def sync_sweep_from_baas(self) -> dict[str, Any]:
         """从 BAAS 配置读取扫荡列表并同步到 BAAS-Plus 配置（普通/困难图为空时填充）

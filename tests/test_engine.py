@@ -30,6 +30,10 @@ class FakeBridge:
     def create_baas(self, adb_address=None):
         assert adb_address == "127.0.0.1:16384"
 
+    def launch_game(self):
+        self.solves.append("restart")
+        return True
+
     def solve(self, task):
         self.solves.append(task)
         return True
