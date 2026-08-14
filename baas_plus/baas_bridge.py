@@ -214,8 +214,12 @@ class BaasBridge:
 
         config_set = ConfigSet(config_dir=self.config.baas.config_dir)
         baas = Baas_thread(config_set, None, None, None)
+        # 必须先 set_ocr 再 init_all_data：set_ocr 会设置 ocr_img_pass_method
+        # （本地 OCR=0 共享内存/远程=1）与 shared_memory_name，init_all_data →
+        # init_device → check_resolution 依赖它；直接赋值 baas.ocr 会绕过该逻辑，
+        # 导致 OCR 调用时报 Invalid pass_method None
+        baas.set_ocr(self._main.ocr)
         baas.init_all_data()
-        baas.ocr = self._main.ocr
         if adb_address:
             baas.set_adb_address(adb_address) if hasattr(baas, "set_adb_address") else None
         self.baas_thread = baas
@@ -317,7 +321,7 @@ class BaasBridge:
         覆盖时机：check_baas / create_baas 之后调用，后续所有 ConfigSet 实例共享生效。
         """
         import_baas(self.config.baas.repo_dir)
-        from core.config.config_set import ConfigSet
+        _, ConfigSet, _ = import_baas(self.config.baas.repo_dir)
 
         pkg = package_name or self.config.baas.game_package_name
         if not pkg:
