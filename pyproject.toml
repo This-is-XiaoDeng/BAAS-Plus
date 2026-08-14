@@ -9,7 +9,7 @@ repository = "https://github.com/This-is-XiaoDeng/BAAS-Plus"
 packages = [{ include = "baas_plus" }]
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = ">=3.9,<4.0"
 fastapi = "^0.115"
 uvicorn = { extras = ["standard"], version = "^0.34" }
 httpx = "^0.28"
