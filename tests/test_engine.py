@@ -238,10 +238,15 @@ async def test_sweep_tasks_skipped_in_task_phase(tmp_path):
     assert result.executed_tasks == ["restart", "cafe_reward"]
 
 
+async def _instant_sleep(delay):
+    """测试替身：不真等冷却"""
+    return None
+
+
 @pytest.mark.asyncio
 async def test_arena_loops_until_tickets_done(tmp_path, monkeypatch):
-    """arena 自动重复：next_time>0 时等待冷却后继续，直到票用完（next_time=0）"""
-    monkeypatch.setattr("time.sleep", lambda s: None)  # 测试中不真等冷却
+    """arena 自动重复：next_time>0 时异步等待冷却后继续，直到票用完（next_time=0）"""
+    monkeypatch.setattr("asyncio.sleep", _instant_sleep)  # 测试中不真等冷却
     next_times = iter([55, 55, 0])  # 第 1、2 场后冷却，第 3 场结束
 
     class ArenaBridge(FakeBridge):
@@ -263,6 +268,38 @@ async def test_arena_loops_until_tickets_done(tmp_path, monkeypatch):
     result = await engine.run_once()
     assert bridge.solves.count("arena") == 3
     assert result.executed_tasks.count("arena") == 3
+
+
+@pytest.mark.asyncio
+async def test_arena_interleaves_with_regular_tasks(tmp_path, monkeypatch):
+    """arena 冷却等待期间穿插执行常规任务（asyncio.sleep 让出事件循环）"""
+    monkeypatch.setattr("asyncio.sleep", _instant_sleep)
+    next_times = iter([55, 0])  # 第 1 场后冷却 55s，第 2 场结束
+
+    class InterleaveBridge(FakeBridge):
+        @property
+        def last_next_time(self):
+            try:
+                return next(next_times)
+            except StopIteration:
+                return 0
+
+    bridge = InterleaveBridge(ap=100)
+    engine = make_engine(
+        bridge,
+        events=[],
+        data_dir=str(tmp_path),
+        baas={"tasks": ["cafe_reward", "arena", "lesson"]},
+        sweep={"normal_tasks": []},
+    )
+    result = await engine.run_once()
+    # arena 与常规任务都执行了
+    assert bridge.solves.count("arena") == 2
+    for t in ["cafe_reward", "lesson"]:
+        assert t in bridge.solves
+        assert t in result.executed_tasks
+    # 锁串行化：任一时刻最多一个任务正在执行（solve 记录顺序无并发交叉）
+    assert bridge.solves.count("arena") + bridge.solves.count("cafe_reward") + bridge.solves.count("lesson") == 4
 
 
 @pytest.mark.asyncio

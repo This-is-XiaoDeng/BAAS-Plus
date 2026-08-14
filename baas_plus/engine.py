@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +61,8 @@ class Engine:
         self.bridge = bridge or BaasBridge(config)
         self.fetcher = fetcher or ActivityFetcher(config.activity.server)
         self.result = RunResult()
+        # arena 与常规任务并发执行时，用锁保证同一时刻仅一个任务操作 BAAS
+        self._baas_lock = threading.Lock()
 
     # ---- 活动检测 ----
 
@@ -190,25 +193,41 @@ class Engine:
             swept.extend(hard)
         return swept
 
-    def _run_task_checked(self, task: str) -> None:
-        """执行单个勾选任务并记录；arena 自动重复至票用完（含冷却等待）"""
-        import time
+    def _solve_locked(self, task: str) -> None:
+        """带锁执行 BAAS 任务：同一时刻仅一个任务在跑（arena 与常规任务共享锁）"""
+        with self._baas_lock:
+            self.bridge.solve(task)
 
-        if task == "arena":
-            # BAAS arena 模块：票数 >1 时打一场后设置 next_time（默认 55s 冷却）
-            # 请求调度器再次执行，直到票用完（next_time 归 0）。BAAS-Plus 不走
-            # scheduler 主循环，这里手动模拟重复执行，最多 6 场（5 票 + 容差）。
-            for i in range(6):
-                self.bridge.solve("arena")
+    async def _run_regular_tasks(self, tasks: list[str]) -> None:
+        """顺序执行常规任务（线程池 + 锁；与 arena 协程并发，锁保证不同时操作 BAAS）"""
+        for task in tasks:
+            try:
+                await asyncio.to_thread(self._solve_locked, task)
+                self.result.executed_tasks.append(task)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("任务 %s 执行失败: %s", task, exc)
+                self.result.status = "partial"
+
+    async def _run_arena(self) -> None:
+        """战术对抗赛：最多 6 场；冷却等待期间让出事件循环，常规任务穿插执行
+
+        BAAS arena 模块：票数 >1 时打一场后设置 next_time（默认 55s 冷却）；
+        最后一票打完后 next_time 归 0。这里模拟调度器的"冷却→再派发"，
+        用 asyncio.sleep 而非 time.sleep，等待期间其他协程（常规任务）可运行。
+        """
+        for i in range(6):
+            try:
+                await asyncio.to_thread(self._solve_locked, "arena")
                 self.result.executed_tasks.append("arena")
-                cooldown = self.bridge.last_next_time
-                if cooldown <= 0:
-                    break
-                logger.info("竞技场冷却 %ss，等待后继续（第 %s 场）", cooldown, i + 2)
-                time.sleep(cooldown)
-            return
-        self.bridge.solve(task)
-        self.result.executed_tasks.append(task)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("竞技场执行失败: %s", exc)
+                self.result.status = "partial"
+                break
+            cooldown = self.bridge.last_next_time
+            if cooldown <= 0:
+                break
+            logger.info("竞技场冷却 %ss，等待期间穿插执行其他任务（第 %s 场）", cooldown, i + 2)
+            await asyncio.sleep(cooldown)
 
     # ---- 主流程 ----
 
@@ -252,16 +271,14 @@ class Engine:
                 logger.error("启动游戏失败: %s", exc)
                 self.result.status = "partial"
 
-            # 4. 勾选任务（扫荡类任务由扫荡阶段统一调度，避免重复执行）
-            for task in self.config.baas.tasks:
-                if task in SWEEP_TASKS:
-                    logger.info("跳过任务 %s（由扫荡阶段按体力统一调度）", task)
-                    continue
-                try:
-                    self._run_task_checked(task)
-                except Exception as exc:  # noqa: BLE001
-                    logger.error("任务 %s 执行失败: %s", task, exc)
-                    self.result.status = "partial"
+            # 4. 勾选任务（扫荡类任务由扫荡阶段统一调度）；arena 与常规任务穿插：
+            #    arena 冷却等待（asyncio.sleep）期间让出事件循环，常规任务继续跑
+            sweepless = [t for t in self.config.baas.tasks if t not in SWEEP_TASKS]
+            if "arena" in sweepless:
+                regular = [t for t in sweepless if t != "arena"]
+                await asyncio.gather(self._run_regular_tasks(regular), self._run_arena())
+            else:
+                await self._run_regular_tasks(sweepless)
 
             # 5. 扫荡
             self.result.swept = self.run_sweep()
