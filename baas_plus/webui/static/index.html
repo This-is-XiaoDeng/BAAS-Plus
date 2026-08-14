@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BAAS-Plus 控制台</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #1a2130; --border: #2a3448; --text: #dce3f0;
+    --muted: #8b97ad; --accent: #4f8cff; --ok: #3ddc84; --warn: #ffb454; --err: #ff6b6b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif; padding: 24px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  h2 { font-size: 15px; margin-bottom: 12px; color: var(--accent); }
+  .sub { color: var(--muted); margin-bottom: 24px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1200px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .card.full { grid-column: 1 / -1; }
+  label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 12px; }
+  input, select, textarea {
+    width: 100%; background: #10172a; border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 8px 10px; font-size: 13px; outline: none;
+  }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  .chk { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .chk label { margin: 0; display: flex; align-items: center; gap: 6px; background: #10172a;
+    border: 1px solid var(--border); padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); }
+  .chk input { width: auto; }
+  .chk label.checked { border-color: var(--accent); color: var(--accent); }
+  .btn { border: none; border-radius: 6px; padding: 9px 18px; font-size: 13px; cursor: pointer; }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn.danger { background: transparent; border: 1px solid var(--err); color: var(--err); }
+  .actions { margin: 16px 0; display: flex; gap: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+  .tag.ok { background: rgba(61,220,132,.15); color: var(--ok); }
+  .tag.warn { background: rgba(255,180,84,.15); color: var(--warn); }
+  .tag.err { background: rgba(255,107,107,.15); color: var(--err); }
+  .tag.info { background: rgba(79,140,255,.15); color: var(--accent); }
+  .toast { position: fixed; top: 20px; right: 20px; background: var(--panel); border: 1px solid var(--border);
+    padding: 12px 18px; border-radius: 8px; display: none; z-index: 10; max-width: 360px; }
+  pre { background: #10172a; border: 1px solid var(--border); border-radius: 6px; padding: 10px;
+    font-size: 12px; overflow: auto; max-height: 240px; }
+  .loading { color: var(--muted); }
+</style>
+</head>
+<body>
+  <h1>🐱 BAAS-Plus 控制台</h1>
+  <div class="sub">基于 BAAS 的蔚蓝档案自动化调度器 · 配置 / 活动 / 执行记录</div>
+
+  <div class="actions">
+    <button class="btn primary" onclick="saveConfig()">💾 保存配置</button>
+    <button class="btn ghost" onclick="loadConfig()">↻ 重新加载</button>
+    <button class="btn danger" onclick="runNow()">▶ 立即执行一次</button>
+    <button class="btn ghost" onclick="testEmail()">✉ 测试邮件</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>模拟器 & BAAS</h2>
+      <div class="row">
+        <div><label>模拟器类型</label>
+          <select id="sim_type">
+            <option value="mumu">MuMu12</option>
+            <option value="mumu_global">MuMu12 国际版</option>
+            <option value="leidian">雷电</option>
+            <option value="bluestacks_nxt">蓝叠 5 国际版</option>
+            <option value="bluestacks_nxt_cn">蓝叠 5 中国版</option>
+          </select></div>
+        <div><label>多开实例（0 起）</label><input id="sim_instance" type="number" value="0"></div>
+      </div>
+      <label>BAAS 源码目录（repo_dir，留空用已安装包）</label><input id="baas_repo_dir" placeholder="C:\BAAS">
+      <label>BAAS 配置目录名（config/ 下子目录）</label><input id="baas_config_dir" placeholder="default">
+      <label>服务器</label>
+      <select id="baas_server">
+        <option value="cn">国服 cn</option>
+        <option value="in">国际服 in</option>
+        <option value="jp">日服 jp</option>
+      </select>
+      <label>手动指定活动模块（可选，自动映射未实现时使用）</label><input id="baas_current_activity" placeholder="如 SayBing">
+    </div>
+
+    <div class="card">
+      <h2>勾选任务（顺序执行）</h2>
+      <div class="chk" id="task_list"></div>
+    </div>
+
+    <div class="card">
+      <h2>活动策略</h2>
+      <div class="chk">
+        <label><input type="checkbox" id="act_push_story"> 新活动自动推图（剧情）</label>
+        <label><input type="checkbox" id="act_push_mission"> 新活动自动推图（任务）</label>
+        <label><input type="checkbox" id="act_push_challenge"> 新活动自动推图（挑战）</label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>扫荡策略</h2>
+      <div class="row">
+        <div><label>策略</label>
+          <select id="sweep_strategy">
+            <option value="auto">auto：按剩余体力计算次数</option>
+            <option value="fixed">fixed：固定次数</option>
+          </select></div>
+        <div><label>固定次数（fixed 模式）</label><input id="sweep_fixed_times" type="number" value="5"></div>
+      </div>
+      <div class="row">
+        <div><label>单关次数上限（auto 模式）</label><input id="sweep_max_times" type="number" value="20"></div>
+        <div><label>活动关卡号（如 1 或 1,2）</label><input id="sweep_activity_task_number" value="1"></div>
+      </div>
+      <div class="chk"><label><input type="checkbox" id="sweep_activity_first"> 有活动时优先扫活动关卡</label></div>
+      <label>普通图扫荡列表（region-mission-counts，逗号分隔）</label>
+      <input id="sweep_normal_tasks" placeholder="15-1-3,16-3-5">
+      <label>困难图扫荡列表</label>
+      <input id="sweep_hard_tasks" placeholder="20-1-max">
+    </div>
+
+    <div class="card">
+      <h2>邮件通知</h2>
+      <div class="chk"><label><input type="checkbox" id="notify_enabled"> 启用通知</label></div>
+      <div class="row">
+        <div><label>SMTP 服务器</label><input id="mail_smtp_host" value="smtp.qq.com"></div>
+        <div><label>端口</label><input id="mail_smtp_port" type="number" value="465"></div>
+      </div>
+      <div class="chk"><label><input type="checkbox" id="mail_use_ssl" checked> 使用 SSL</label></div>
+      <label>邮箱账号</label><input id="mail_username" placeholder="xxx@qq.com">
+      <label>SMTP 授权码</label><input id="mail_password" type="password" placeholder="授权码（非登录密码）">
+      <label>发件地址（留空用账号）</label><input id="mail_from_addr">
+      <label>收件地址（逗号分隔多个）</label><input id="mail_to_addrs" placeholder="a@qq.com,b@qq.com">
+    </div>
+
+    <div class="card full">
+      <h2>活动状态</h2>
+      <button class="btn ghost" onclick="loadActivities()">刷新活动</button>
+      <div id="activity_box" class="loading">加载中…</div>
+    </div>
+
+    <div class="card full">
+      <h2>执行记录</h2>
+      <table>
+        <thead><tr><th>#</th><th>开始时间</th><th>状态</th><th>摘要</th></tr></thead>
+        <tbody id="record_rows"><tr><td colspan="4" class="loading">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let cfg = null;
+
+function toast(msg, ok = true) {
+  const t = $('toast');
+  t.textContent = (ok ? '✅ ' : '⚠️ ') + msg;
+  t.style.display = 'block';
+  t.style.borderColor = ok ? 'var(--ok)' : 'var(--err)';
+  setTimeout(() => t.style.display = 'none', 3000);
+}
+async function api(path, opts = {}) {
+  const resp = await fetch(path, opts);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.detail || resp.statusText);
+  return data;
+}
+function fmt(ts) {
+  if (!ts) return '-';
+  return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false });
+}
+
+async function loadConfig() {
+  cfg = await api('/api/config');
+  $('sim_type').value = cfg.simulator.type;
+  $('sim_instance').value = cfg.simulator.instance;
+  $('baas_repo_dir').value = cfg.baas.repo_dir;
+  $('baas_config_dir').value = cfg.baas.config_dir;
+  $('baas_server').value = cfg.baas.server;
+  $('baas_current_activity').value = cfg.baas.current_activity;
+  $('act_push_story').checked = cfg.activity.push_story_on_new;
+  $('act_push_mission').checked = cfg.activity.push_mission_on_new;
+  $('act_push_challenge').checked = cfg.activity.push_challenge_on_new;
+  $('sweep_strategy').value = cfg.sweep.strategy;
+  $('sweep_fixed_times').value = cfg.sweep.fixed_times;
+  $('sweep_max_times').value = cfg.sweep.max_times;
+  $('sweep_activity_task_number').value = cfg.sweep.activity_task_number;
+  $('sweep_activity_first').checked = cfg.sweep.activity_first;
+  $('sweep_normal_tasks').value = (cfg.sweep.normal_tasks || []).join(',');
+  $('sweep_hard_tasks').value = (cfg.sweep.hard_tasks || []).join(',');
+  $('notify_enabled').checked = cfg.notify.enabled;
+  $('mail_smtp_host').value = cfg.notify.email.smtp_host;
+  $('mail_smtp_port').value = cfg.notify.email.smtp_port;
+  $('mail_use_ssl').checked = cfg.notify.email.use_ssl;
+  $('mail_username').value = cfg.notify.email.username;
+  $('mail_password').value = cfg.notify.email.password;
+  $('mail_from_addr').value = cfg.notify.email.from_addr;
+  $('mail_to_addrs').value = (cfg.notify.email.to_addrs || []).join(',');
+  await renderTasks();
+  loadRecords();
+  loadActivities();
+}
+
+async function renderTasks() {
+  const tasks = await api('/api/tasks');
+  const box = $('task_list');
+  box.innerHTML = '';
+  tasks.forEach(t => {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.value = t; cb.checked = (cfg.baas.tasks || []).includes(t);
+    cb.onchange = () => label.classList.toggle('checked', cb.checked);
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(t));
+    if (cb.checked) label.classList.add('checked');
+    box.appendChild(label);
+  });
+}
+
+function collectConfig() {
+  const checked = [...$('task_list').querySelectorAll('input:checked')].map(i => i.value);
+  return {
+    simulator: { type: $('sim_type').value, instance: parseInt($('sim_instance').value) || 0 },
+    baas: {
+      repo_dir: $('baas_repo_dir').value.trim(),
+      config_dir: $('baas_config_dir').value.trim() || 'default',
+      server: $('baas_server').value,
+      current_activity: $('baas_current_activity').value.trim(),
+      tasks: checked,
+    },
+    activity: {
+      data_source: 'gamekee',
+      server: $('baas_server').value,
+      push_story_on_new: $('act_push_story').checked,
+      push_mission_on_new: $('act_push_mission').checked,
+      push_challenge_on_new: $('act_push_challenge').checked,
+    },
+    sweep: {
+      strategy: $('sweep_strategy').value,
+      fixed_times: parseInt($('sweep_fixed_times').value) || 5,
+      max_times: parseInt($('sweep_max_times').value) || 20,
+      activity_first: $('sweep_activity_first').checked,
+      activity_task_number: $('sweep_activity_task_number').value.trim() || '1',
+      normal_tasks: $('sweep_normal_tasks').value.split(',').map(s => s.trim()).filter(Boolean),
+      hard_tasks: $('sweep_hard_tasks').value.split(',').map(s => s.trim()).filter(Boolean),
+    },
+    notify: {
+      enabled: $('notify_enabled').checked,
+      email: {
+        smtp_host: $('mail_smtp_host').value.trim(),
+        smtp_port: parseInt($('mail_smtp_port').value) || 465,
+        use_ssl: $('mail_use_ssl').checked,
+        username: $('mail_username').value.trim(),
+        password: $('mail_password').value.trim(),
+        from_addr: $('mail_from_addr').value.trim(),
+        to_addrs: $('mail_to_addrs').value.split(',').map(s => s.trim()).filter(Boolean),
+      },
+    },
+    webui: cfg.webui,
+    data_dir: cfg.data_dir,
+  };
+}
+
+async function saveConfig() {
+  try {
+    cfg = await api('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collectConfig()) });
+    toast('配置已保存');
+  } catch (e) { toast('保存失败: ' + e.message, false); }
+}
+
+async function runNow() {
+  if (!confirm('确认立即执行一次完整流程？（会启动模拟器）')) return;
+  toast('执行中，请稍候…');
+  try {
+    const r = await api('/api/run', { method: 'POST' });
+    toast('执行完成: ' + r.summary, r.status !== 'failed');
+    loadRecords();
+  } catch (e) { toast('执行失败: ' + e.message, false); }
+}
+
+async function testEmail() {
+  try { const r = await api('/api/test-email', { method: 'POST' }); toast(r.ok ? '测试邮件已发送' : '发送失败，请检查 SMTP 配置', r.ok); }
+  catch (e) { toast('请求失败: ' + e.message, false); }
+}
+
+async function loadRecords() {
+  try {
+    const rows = await api('/api/records?limit=30');
+    $('record_rows').innerHTML = rows.map(r => `
+      <tr><td>${r.id}</td><td>${fmt(r.started_at)}</td>
+      <td><span class="tag ${r.status === 'success' ? 'ok' : r.status === 'failed' ? 'err' : 'warn'}">${r.status}</span></td>
+      <td title="${(r.detail && JSON.stringify(r.detail) || '').replace(/"/g, '&quot;')}">${r.summary || ''}</td></tr>`).join('');
+  } catch (e) { $('record_rows').innerHTML = `<tr><td colspan="4">加载失败: ${e.message}</td></tr>`; }
+}
+
+async function loadActivities() {
+  try {
+    const data = await api('/api/activities');
+    const seen = new Set(data.seen_keys);
+    const now = Date.now() / 1000;
+    $('activity_box').innerHTML = data.current.length ? `
+      <table><thead><tr><th>类型</th><th>标题</th><th>开始</th><th>结束</th><th>状态</th></tr></thead>
+      <tbody>${data.current.map(e => `
+        <tr><td>${e.event_type}</td><td>${e.title}</td>
+        <td>${fmt(e.start_at)}</td><td>${fmt(e.end_at)}</td>
+        <td>${seen.has(e.event_type + ':' + e.id) ? '<span class="tag info">已处理</span>' : '<span class="tag warn">🆕 新</span>'}
+            ${e.end_at < now ? '<span class="tag info">已结束</span>' : ''}</td></tr>`).join('')}
+      </tbody></table>` : '<div class="loading">暂无活动</div>';
+  } catch (e) { $('activity_box').textContent = '加载失败: ' + e.message; }
+}
+
+loadConfig();
+</script>
+</body>
+</html>
