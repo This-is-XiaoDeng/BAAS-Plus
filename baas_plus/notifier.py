@@ -15,15 +15,17 @@ logger = logging.getLogger(__name__)
 class EmailNotifier:
     def __init__(self, config: EmailConfig) -> None:
         self.config = config
+        self.last_error = ""  # 最近一次发送失败的具体原因（供 WebUI 展示）
 
     @property
     def enabled(self) -> bool:
-        return bool(self.config.username and self.config.password and self.config.to_addrs)
+        return bool(self.config.smtp_host and self.config.username and self.config.password and self.config.to_addrs)
 
     def send(self, subject: str, body: str) -> bool:
-        """发送邮件；成功返回 True，失败记录日志返回 False"""
+        """发送邮件；成功返回 True，失败返回 False（具体原因见 self.last_error）"""
         cfg = self.config
         if not self.enabled:
+            self.last_error = "邮件通知未完整配置（smtp_host/username/password/to_addrs 必填）"
             logger.warning("邮件通知未完整配置（username/password/to_addrs），跳过发送")
             return False
 
@@ -43,8 +45,10 @@ class EmailNotifier:
                     server.login(cfg.username, cfg.password)
                     server.sendmail(cfg.from_addr or cfg.username, cfg.to_addrs, msg.as_string())
             logger.info("邮件通知发送成功: %s", subject)
+            self.last_error = ""
             return True
         except Exception as exc:  # noqa: BLE001
+            self.last_error = f"{type(exc).__name__}: {exc}"
             logger.error("邮件通知发送失败: %s", exc)
             return False
 

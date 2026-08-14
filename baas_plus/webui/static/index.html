@@ -306,8 +306,11 @@ async function runNow() {
 }
 
 async function testEmail() {
-  try { const r = await api('/api/test-email', { method: 'POST' }); toast(r.ok ? '测试邮件已发送' : '发送失败，请检查 SMTP 配置', r.ok); }
-  catch (e) { toast('请求失败: ' + e.message, false); }
+  try {
+    const r = await api('/api/test-email', { method: 'POST' });
+    if (r.ok) toast('测试邮件已发送 ✓', true);
+    else toast('发送失败：' + (r.error || '请检查 SMTP 配置'), false);
+  } catch (e) { toast('请求失败: ' + e.message, false); }
 }
 
 function typeLabel(t) {

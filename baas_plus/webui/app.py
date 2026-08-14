@@ -133,10 +133,11 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.post("/api/test-email")
     def test_email() -> dict[str, Any]:
-        ok = EmailNotifier(config.notify.email).send(
+        notifier = EmailNotifier(config.notify.email)
+        ok = notifier.send(
             "BAAS-Plus 测试邮件", "这是一封测试邮件，收到即表示 SMTP 配置正确。"
         )
-        return {"ok": ok}
+        return {"ok": ok, "error": notifier.last_error}
 
     # ---- 测试 - 模拟器 / BAAS ----
 
