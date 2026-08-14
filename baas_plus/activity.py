@@ -18,6 +18,17 @@ GAMEKEE_HEADERS = {"game-alias": "ba"}
 SERVER_ID_MAP: dict[str, int] = {"cn": 16, "in": 17, "jp": 15}
 
 
+# 活动标题关键词 → BAAS 活动模块名（人工映射，兜底英文关键词启发式匹配）
+# 纯中文标题的活动靠这里命中；新活动确认后在此加一行即可
+ACTIVITY_MODULE_ALIASES: dict[str, str] = {
+    "笑笑闹闹": "livelyAndJoyfulWalkingTour",
+    "走走绕绕": "livelyAndJoyfulWalkingTour",
+    "来自歌剧的爱情": "FromOpera0068WithLove",
+    "百芳丛中独一枝": "AHundredYearsofOneFlowerLetsGetRealwithaWaterBattle",
+    "水上争锋": "AHundredYearsofOneFlowerLetsGetRealwithaWaterBattle",
+}
+
+
 class EventType(str, Enum):
     CARD = "card"  # 卡池
     EVENT = "event"  # 常规活动（GameKee activity_kind_id=14，BAAS 可推图/扫荡）

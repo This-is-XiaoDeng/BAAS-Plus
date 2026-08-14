@@ -3,7 +3,11 @@ import time
 
 import pytest
 
-from baas_plus.activity import EventType, GameEvent
+from baas_plus.activity import (
+    ACTIVITY_MODULE_ALIASES,
+    EventType,
+    GameEvent,
+)
 from baas_plus.baas_bridge import compute_sweep_times
 from baas_plus.config import AppConfig
 from baas_plus.engine import Engine, HARD_MAX_TIMES
@@ -314,6 +318,28 @@ async def test_activity_sweep_skips_unmatched(tmp_path):
     await engine.run_once()
     assert "activity_sweep" not in bridge.solves
     assert bridge.current_activity is None
+
+
+@pytest.mark.asyncio
+async def test_activity_sweep_alias_match(tmp_path):
+    """纯中文标题活动通过人工映射表命中（如「笑笑闹闹」→ livelyAndJoyfulWalkingTour）"""
+    now = int(time.time())
+    running = GameEvent(
+        id=33, title="复刻活动【笑笑闹闹 走走绕绕】", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+    bridge = FakeBridge(ap=500)
+    bridge.activity_modules = ["CodeBox", "livelyAndJoyfulWalkingTour"]
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+    )
+    await engine.run_once()
+    assert bridge.current_activity == "livelyAndJoyfulWalkingTour"
+    assert bridge.solves.count("activity_sweep") == 1
+    assert ACTIVITY_MODULE_ALIASES["笑笑闹闹"] == "livelyAndJoyfulWalkingTour"
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .activity import ActivityFetcher, EventType, GameEvent
+from .activity import ACTIVITY_MODULE_ALIASES, ActivityFetcher, EventType, GameEvent
 from .baas_bridge import BaasBridge, compute_sweep_times
 from .config import AppConfig, SWEEP_TASKS
 from .notifier import EmailNotifier
@@ -158,15 +158,17 @@ class Engine:
 
         GameKee 标题多为中文，BAAS 模块为英文名（如 CodeBox）；活动标题常含
         英文活动名关键词（如「CODE：BOX」→ CodeBox）。提取标题中的英文/数字词
-        （>=3 字符），与模块名做子串匹配。
+        （>=3 字符），与模块名做子串匹配；纯中文标题靠
+        ACTIVITY_MODULE_ALIASES 人工映射命中。
         """
         words = re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", title)
         norm_words = {w.lower() for w in words}
-        if not norm_words:
-            return None
         for mod in modules:
             mn = mod.lower()
-            if any(w in mn for w in norm_words):
+            if norm_words and any(w in mn for w in norm_words):
+                return mod
+        for keyword, mod in ACTIVITY_MODULE_ALIASES.items():
+            if keyword in title:
                 return mod
         return None
 
