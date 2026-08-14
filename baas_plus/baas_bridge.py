@@ -281,22 +281,46 @@ class BaasBridge:
         logger.info("已设置 BAAS 活动模块: %s", module_name)
 
     def list_activity_modules(self) -> list[str]:
-        """扫描 BAAS module/activities/ 下的活动模块名（不含扩展名）"""
+        """扫描当前服可用的活动模块白名单（BAAS 按服加载截图模板资源）
+
+        注意：BAAS 的 position.init_image_data 只加载当前服
+        src/images/{CN|Global|JP}/x_y_range/activity/ 下的模板，缺少模板的活动
+        模块即使存在也会导致资源初始化失败（截图匹配全废）。因此这里扫的是
+        **当前服的 x_y_range 资源目录**，而不是 module/activities/（全服共享）。
+        """
         import os
 
+        identifier = {"cn": "CN", "in": "Global", "jp": "JP"}.get(
+            self.config.baas.server, "CN"
+        )
         try:
             import_baas(self.config.baas.repo_dir)
             import module.activities as acts_pkg
 
-            d = os.path.dirname(acts_pkg.__file__)
+            root = os.path.dirname(os.path.dirname(os.path.dirname(acts_pkg.__file__)))  # BAAS 根目录
+            d = os.path.join(root, "src", "images", identifier, "x_y_range", "activity")
+            if not os.path.isdir(d):
+                logger.warning("当前服活动资源目录不存在: %s", d)
+                return []
+            # 同时校验关卡数据 JSON 存在（activity_utils 扫荡时需要；命名有两种：<模块>.json / <模块>.py.json）
+            json_dir = os.path.join(root, "src", "explore_task_data", "activities")
             return sorted(
                 f[:-3]
                 for f in os.listdir(d)
-                if f.endswith(".py") and not f.startswith("_") and f != "activity_utils.py"
+                if f.endswith(".py")
+                and not f.startswith("_")
+                and (
+                    os.path.exists(os.path.join(json_dir, f[:-3] + ".json"))
+                    or os.path.exists(os.path.join(json_dir, f[:-3] + ".py.json"))
+                )
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("扫描 BAAS 活动模块失败: %s", exc)
             return []
+
+    def activity_module_available(self, module_name: str) -> bool:
+        """模块是否在当前服资源白名单内（防止选了缺模板的活动导致 BAAS 崩溃）"""
+        return module_name in self.list_activity_modules()
 
     def set_sweep_tasks(self, normal_tasks: list[str], hard_tasks: list[str]) -> None:
         """设置普通/困难图扫荡列表（mainlinePriority / hardPriority，格式 region-mission-counts）

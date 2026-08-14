@@ -96,7 +96,14 @@ class Engine:
         优先级：手动配置 current_activity > 事件标题精确匹配（未来可扩展模糊匹配/映射表）
         """
         if self.config.baas.current_activity:
-            return self.config.baas.current_activity
+            manual = self.config.baas.current_activity
+            if self.bridge.activity_module_available(manual):
+                return manual
+            logger.warning(
+                "手动配置的活动模块 %s 不在当前服资源白名单（缺少 BAAS 截图模板），跳过推图",
+                manual,
+            )
+            return None
         return None
 
     def push_new_activity(self, event: GameEvent) -> list[str]:
@@ -138,7 +145,15 @@ class Engine:
         避免扫到已结束/仅兑换可用的旧活动模块）。
         """
         if self.config.baas.current_activity:
-            return self.config.baas.current_activity
+            manual = self.config.baas.current_activity
+            if self.bridge.activity_module_available(manual):
+                return manual
+            logger.warning(
+                "手动配置的活动模块 %s 不在当前服资源白名单（缺少 BAAS 截图模板），"
+                "跳过活动扫荡",
+                manual,
+            )
+            return None
         modules = self.bridge.list_activity_modules()
         if not modules:
             logger.warning("无法扫描 BAAS 活动模块列表")
@@ -169,7 +184,7 @@ class Engine:
             if norm_words and any(w in mn for w in norm_words):
                 return mod
         for keyword, mod in ACTIVITY_MODULE_ALIASES.items():
-            if keyword in title:
+            if keyword in title and mod in modules:
                 return mod
         return None
 

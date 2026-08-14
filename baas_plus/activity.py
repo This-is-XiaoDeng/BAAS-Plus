@@ -20,9 +20,11 @@ SERVER_ID_MAP: dict[str, int] = {"cn": 16, "in": 17, "jp": 15}
 
 # 活动标题关键词 → BAAS 活动模块名（人工映射，兜底英文关键词启发式匹配）
 # 纯中文标题的活动靠这里命中；新活动确认后在此加一行即可
+# 注意：同一活动在不同服的 BAAS 模块名可能不同（如「笑笑闹闹」CN=LivelyandBusily、
+# JP=livelyAndJoyfulWalkingTour），映射按当前服白名单校验后生效
 ACTIVITY_MODULE_ALIASES: dict[str, str] = {
-    "笑笑闹闹": "livelyAndJoyfulWalkingTour",
-    "走走绕绕": "livelyAndJoyfulWalkingTour",
+    "笑笑闹闹": "LivelyandBusily",
+    "走走绕绕": "LivelyandBusily",
     "来自歌剧的爱情": "FromOpera0068WithLove",
     "百芳丛中独一枝": "AHundredYearsofOneFlowerLetsGetRealwithaWaterBattle",
     "水上争锋": "AHundredYearsofOneFlowerLetsGetRealwithaWaterBattle",

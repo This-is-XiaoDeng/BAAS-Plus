@@ -65,6 +65,13 @@ class FakeBridge:
     def list_activity_modules(self):
         return getattr(self, "activity_modules", [])
 
+    def activity_module_available(self, module_name):
+        # 未设置白名单时默认放行（测试兼容）；设置后按白名单校验
+        mods = getattr(self, "activity_modules", None)
+        if mods is None:
+            return True
+        return module_name in mods
+
     def stop(self):
         pass
 
@@ -322,14 +329,14 @@ async def test_activity_sweep_skips_unmatched(tmp_path):
 
 @pytest.mark.asyncio
 async def test_activity_sweep_alias_match(tmp_path):
-    """纯中文标题活动通过人工映射表命中（如「笑笑闹闹」→ livelyAndJoyfulWalkingTour）"""
+    """纯中文标题活动通过人工映射表命中（如「笑笑闹闹」→ CN 服 LivelyandBusily）"""
     now = int(time.time())
     running = GameEvent(
         id=33, title="复刻活动【笑笑闹闹 走走绕绕】", start_at=now - 3600,
         end_at=now + 86400, event_type=EventType.EVENT,
     )
     bridge = FakeBridge(ap=500)
-    bridge.activity_modules = ["CodeBox", "livelyAndJoyfulWalkingTour"]
+    bridge.activity_modules = ["CodeBox", "LivelyandBusily"]
     engine = make_engine(
         bridge,
         events=[running],
@@ -337,9 +344,30 @@ async def test_activity_sweep_alias_match(tmp_path):
         baas={"tasks": [], "current_activity": ""},
     )
     await engine.run_once()
-    assert bridge.current_activity == "livelyAndJoyfulWalkingTour"
+    assert bridge.current_activity == "LivelyandBusily"
     assert bridge.solves.count("activity_sweep") == 1
-    assert ACTIVITY_MODULE_ALIASES["笑笑闹闹"] == "livelyAndJoyfulWalkingTour"
+    assert ACTIVITY_MODULE_ALIASES["笑笑闹闹"] == "LivelyandBusily"
+
+
+@pytest.mark.asyncio
+async def test_activity_sweep_alias_whitelist_gate(tmp_path):
+    """别名命中的模块不在当前服白名单时不可用（如 JP 模块名在 CN 服）"""
+    now = int(time.time())
+    running = GameEvent(
+        id=37, title="复刻活动【笑笑闹闹 走走绕绕】", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+    bridge = FakeBridge(ap=500)
+    bridge.activity_modules = ["CodeBox"]  # 白名单里没有 LivelyandBusily
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+    )
+    await engine.run_once()
+    assert "activity_sweep" not in bridge.solves
+    assert bridge.current_activity is None
 
 
 @pytest.mark.asyncio
