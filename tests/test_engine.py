@@ -27,6 +27,7 @@ class FakeBridge:
         self._next_time = 0
         self.baas_sweep_config = {"mainlinePriority": "", "hardPriority": ""}
         self.banner_text = ""
+        self.banner_module: str | None = None
 
     def start_simulator(self):
         self.started = True
@@ -78,6 +79,21 @@ class FakeBridge:
         if isinstance(self.banner_text, list):
             return self.banner_text.pop(0) if self.banner_text else ""
         return self.banner_text
+
+    def match_banner_activity(self, candidates):
+        """模拟模板匹配
+
+        默认命中候选第一个（测试关注点不在轮播图等待时直接通过）；
+        banner_module=False 表示永不命中（换页等待/OCR 兜底测试用）；
+        banner_module=<模块名> 时仅在候选中才命中。
+        """
+        if not candidates:
+            return None
+        if self.banner_module is False:
+            return None
+        if self.banner_module:
+            return self.banner_module if self.banner_module in candidates else None
+        return candidates[0]
 
     def stop(self):
         pass
@@ -388,6 +404,7 @@ async def test_sweep_waits_for_banner_rotation(tmp_path):
     )
     bridge = FakeBridge(ap=500)
     bridge.activity_modules = ["LivelyandBusily"]
+    bridge.banner_module = False  # 模板不命中，走 OCR 轮询等待换页
     bridge.banner_text = [
         "海文迪 铁道失控事件",  # 第 1 次 OCR：火车活动页
         "海文迪 铁道失控事件",  # 第 2 次 OCR：还是火车活动页
@@ -425,6 +442,51 @@ async def test_sweep_skips_when_banner_never_matches(tmp_path):
     assert not ok
     # 超时后 run_sweep 内部会跳过 activity_sweep
     assert bridge.solves.count("activity_sweep") == 0
+
+
+@pytest.mark.asyncio
+async def test_banner_template_match_hits_first(tmp_path):
+    """模板匹配优先：OCR 完全识别不出（艺术字）时，enter1 模板命中即确认当前页"""
+    now = int(time.time())
+    running = GameEvent(
+        id=43, title="复刻活动【笑笑闹闹 走走绕绕】", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+    bridge = FakeBridge(ap=500)
+    bridge.activity_modules = ["LivelyandBusily"]
+    bridge.banner_text = ""  # OCR 吐不出任何字（艺术字场景）
+    bridge.banner_module = "LivelyandBusily"  # 但模板匹配命中
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+    )
+    await engine.run_once()
+    assert bridge.current_activity == "LivelyandBusily"
+    assert bridge.solves.count("activity_sweep") == 1
+
+
+@pytest.mark.asyncio
+async def test_banner_template_miss_falls_back_to_ocr(tmp_path):
+    """模板不命中（如候选活动无 enter1 模板）时回退 OCR 模糊匹配"""
+    now = int(time.time())
+    running = GameEvent(
+        id=45, title="复刻活动【笑笑闹闹 走走绕绕】", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+    bridge = FakeBridge(ap=500)
+    bridge.activity_modules = ["LivelyandBusily"]
+    bridge.banner_module = False  # 模板不命中，验证 OCR 兜底
+    bridge.banner_text = "笑笑闹闹 走走绕绕"  # OCR 兜底命中
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+    )
+    await engine.run_once()
+    assert bridge.solves.count("activity_sweep") == 1
 
 
 @pytest.mark.asyncio

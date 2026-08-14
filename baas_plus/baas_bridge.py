@@ -322,6 +322,89 @@ class BaasBridge:
         """模块是否在当前服资源白名单内（防止选了缺模板的活动导致 BAAS 崩溃）"""
         return module_name in self.list_activity_modules()
 
+    def _activity_resource_root(self) -> str | None:
+        """BAAS 根目录（从 module.activities 包推导），失败返回 None"""
+        try:
+            import_baas(self.config.baas.repo_dir)
+            import module.activities as acts_pkg
+
+            return os.path.dirname(os.path.dirname(os.path.dirname(acts_pkg.__file__)))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("推导 BAAS 根目录失败: %s", exc)
+            return None
+
+    def _activity_template_path(self, module: str, filename: str) -> str | None:
+        """BAAS 活动模块模板图路径：<root>/src/images/<identifier>/activity/<module>/<filename>"""
+        root = self._activity_resource_root()
+        if not root:
+            return None
+        identifier = {"cn": "CN", "in": "Global", "jp": "JP"}.get(
+            self.config.baas.server, "CN"
+        )
+        path = os.path.join(
+            root, "src", "images", identifier, "activity", module, filename
+        )
+        return path if os.path.isfile(path) else None
+
+    def match_banner_activity(
+        self, candidates: list[str], threshold: float = 0.8
+    ) -> str | None:
+        """模板匹配轮播图当前页活动
+
+        用 BAAS 活动模块自带的 enter1.png（主页轮播图「进入活动」按钮模板，
+        各活动样式不同）在轮播图区域搜索，绕开 OCR 对艺术字标题识别率低的问题。
+
+        返回最高分且达阈值的模块名；无候选/无模板/无截图返回 None。
+        """
+        if not candidates or self.baas_thread is None:
+            return None
+        update = getattr(self.baas_thread, "update_screenshot_array", None)
+        if callable(update):
+            update()
+        img = getattr(self.baas_thread, "latest_img_array", None)
+        if img is None:
+            logger.warning("轮播图模板匹配跳过：无截图帧")
+            return None
+        region = tuple(self.config.baas.banner_region or [1109, 133, 1280, 281])
+        ratio = getattr(self.baas_thread, "ratio", 1.0) or 1.0
+        banner = img[
+            int(region[1] * ratio) : int(region[3] * ratio),
+            int(region[0] * ratio) : int(region[2] * ratio),
+        ]
+        if banner.size == 0:
+            return None
+        import cv2
+
+        best_mod, best_val = None, 0.0
+        for mod in candidates:
+            tpl_path = self._activity_template_path(mod, "enter1.png")
+            if not tpl_path:
+                logger.warning("活动模块 %s 无 enter1 模板，跳过模板匹配", mod)
+                continue
+            tpl = cv2.imread(tpl_path)
+            if tpl is None:
+                logger.warning("读取模板失败: %s", tpl_path)
+                continue
+            if tpl.shape[0] > banner.shape[0] or tpl.shape[1] > banner.shape[1]:
+                logger.warning("活动模块 %s 模板大于轮播图区域，跳过", mod)
+                continue
+            res = cv2.matchTemplate(banner, tpl, cv2.TM_CCOEFF_NORMED)
+            _, mx, _, _ = cv2.minMaxLoc(res)
+            logger.info("轮播图模板匹配 %s: %.3f", mod, mx)
+            if mx > best_val:
+                best_val, best_mod = mx, mod
+        if best_mod and best_val >= threshold:
+            logger.info("轮播图模板匹配到目标活动: %s (%.3f)", best_mod, best_val)
+            return best_mod
+        if best_mod:
+            logger.info(
+                "轮播图模板匹配未达阈值: 最高 %s %.3f < %.2f",
+                best_mod,
+                best_val,
+                threshold,
+            )
+        return None
+
     def ocr_banner(self) -> str:
         """OCR 主页轮播图区域文字（复用 BAAS 的 zh-cn OCR）；失败返回空串
 

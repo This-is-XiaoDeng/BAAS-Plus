@@ -103,3 +103,68 @@ def test_launch_game_uses_configured_package(bridge):
     assert "to_main_page" in bridge.baas_thread.calls
     # 同步后的 Baas_thread.package_name
     assert bridge.baas_thread.package_name == "com.custom.bluearchive"
+
+
+class FakeBaasThreadWithImg:
+    """带截图帧的假 Baas_thread（供模板匹配测试）"""
+
+    def __init__(self, img):
+        self.latest_img_array = img
+        self.ratio = 1.0
+        self.screenshotted = 0
+
+    def update_screenshot_array(self):
+        self.screenshotted += 1
+
+
+def _make_screen_with_button():
+    """构造 1280x720 假主页：随机背景 + 轮播图区域 (1109,133,1280,281) 内一个特征按钮"""
+    import cv2
+    import numpy as np
+
+    rng = np.random.default_rng(42)
+    screen = rng.integers(0, 60, (720, 1280, 3), dtype=np.uint8)
+    # 按钮：黄色圆角方块（放在轮播图区域内，对应 BAAS enter1 位置附近）
+    cv2.rectangle(screen, (1181, 180), (1201, 200), (240, 220, 80), -1)
+    cv2.circle(screen, (1191, 190), 8, (60, 60, 240), -1)
+    return screen
+
+
+def test_match_banner_activity_hits_target(bridge, tmp_path, monkeypatch):
+    """enter1 模板命中轮播图区域 → 返回目标模块（绕开 OCR 艺术字问题）"""
+    import cv2
+
+    screen = _make_screen_with_button()
+    bridge.baas_thread = FakeBaasThreadWithImg(screen)
+    # 模板 = 屏幕上按钮的实际像素（模拟 BAAS 活动模块自带模板）
+    tpl = screen[180:200, 1181:1201].copy()
+    tpl_path = tmp_path / "enter1.png"
+    cv2.imwrite(str(tpl_path), tpl)
+    monkeypatch.setattr(
+        bridge, "_activity_template_path", lambda mod, fname: str(tpl_path)
+    )
+    assert bridge.match_banner_activity(["LivelyandBusily"]) == "LivelyandBusily"
+    assert bridge.baas_thread.screenshotted == 1  # 确认先刷新了截图帧
+
+
+def test_match_banner_activity_rejects_wrong_module(bridge, tmp_path, monkeypatch):
+    """非当前页活动的模板（随机噪声）不应命中，返回 None"""
+    import cv2
+    import numpy as np
+
+    screen = _make_screen_with_button()
+    bridge.baas_thread = FakeBaasThreadWithImg(screen)
+    rng = np.random.default_rng(7)
+    noise_tpl = rng.integers(0, 255, (20, 22, 3), dtype=np.uint8)
+    tpl_path = tmp_path / "enter1.png"
+    cv2.imwrite(str(tpl_path), noise_tpl)
+    monkeypatch.setattr(
+        bridge, "_activity_template_path", lambda mod, fname: str(tpl_path)
+    )
+    assert bridge.match_banner_activity(["HighlanderRailroadExplosionIncident"]) is None
+
+
+def test_match_banner_activity_no_screenshot(bridge):
+    """无截图帧时返回 None（不崩溃）"""
+    bridge.baas_thread = FakeBaasThreadWithImg(None)
+    assert bridge.match_banner_activity(["LivelyandBusily"]) is None

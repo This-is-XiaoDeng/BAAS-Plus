@@ -228,9 +228,15 @@ class Engine:
         return best >= 0.6
 
     async def _wait_for_activity_banner(
-        self, keywords: list[str], timeout: float = 90.0
+        self,
+        keywords: list[str],
+        module: str | None = None,
+        timeout: float = 90.0,
     ) -> bool:
-        """等待主页轮播图自动换页到目标活动；OCR 轮询 + 模糊匹配
+        """等待主页轮播图自动换页到目标活动
+
+        优先模板匹配（BAAS 自带 enter1.png 认轮播图按钮，绕开 OCR 艺术字
+        识别率低的问题）；OCR 模糊匹配作为兜底。
 
         BAAS 的 to_activity 点击硬编码坐标 (1196,195) 进入的是轮播图当前页的活动，
         因此必须先确认轮播图显示的是目标活动，再让 BAAS 进入。
@@ -238,6 +244,11 @@ class Engine:
         start = time.time()
         last_text = ""
         while time.time() - start < timeout:
+            if module:
+                hit = self.bridge.match_banner_activity([module])
+                if hit:
+                    logger.info("轮播图模板匹配到目标活动 %s", hit)
+                    return True
             text = self.bridge.ocr_banner()
             if text:
                 last_text = text
@@ -306,9 +317,9 @@ class Engine:
                     self.config.sweep.activity_task_number, times="-1"
                 )
                 # 轮播图导航：BAAS 点 enter 进入的是轮播图当前页的活动，
-                # 先等自动换页到目标活动（OCR 确认）再让 BAAS 进入
+                # 先等自动换页到目标活动（模板匹配优先，OCR 兜底）再让 BAAS 进入
                 keywords = self._banner_keywords(title) if title else []
-                if keywords and not await self._wait_for_activity_banner(keywords):
+                if not await self._wait_for_activity_banner(keywords, module=module):
                     logger.warning("轮播图未就绪，跳过活动扫荡「%s」", title)
                 else:
                     self.bridge.solve("activity_sweep")
