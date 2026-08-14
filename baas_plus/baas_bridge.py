@@ -266,9 +266,37 @@ class BaasBridge:
         return self.baas_thread.config_set
 
     def set_current_activity(self, module_name: str) -> None:
-        """设置 BAAS 当前活动模块（current_game_activity）"""
-        self._config_set().set("current_game_activity", module_name)
+        """设置 BAAS 当前活动模块（current_game_activity）
+
+        必须同时改 Baas_thread.current_game_activity 属性：BAAS 的
+        sweep_activity 读的是该属性（init_device 时从 static_config 拷贝），
+        只写 config 不生效。
+        """
+        if self.baas_thread is not None:
+            self.baas_thread.current_game_activity = module_name
+        try:
+            self._config_set().set("current_game_activity", module_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("写入 config current_game_activity 失败（可忽略）: %s", exc)
         logger.info("已设置 BAAS 活动模块: %s", module_name)
+
+    def list_activity_modules(self) -> list[str]:
+        """扫描 BAAS module/activities/ 下的活动模块名（不含扩展名）"""
+        import os
+
+        try:
+            import_baas(self.config.baas.repo_dir)
+            import module.activities as acts_pkg
+
+            d = os.path.dirname(acts_pkg.__file__)
+            return sorted(
+                f[:-3]
+                for f in os.listdir(d)
+                if f.endswith(".py") and not f.startswith("_") and f != "activity_utils.py"
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("扫描 BAAS 活动模块失败: %s", exc)
+            return []
 
     def set_sweep_tasks(self, normal_tasks: list[str], hard_tasks: list[str]) -> None:
         """设置普通/困难图扫荡列表（mainlinePriority / hardPriority，格式 region-mission-counts）

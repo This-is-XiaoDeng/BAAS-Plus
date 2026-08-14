@@ -58,6 +58,9 @@ class FakeBridge:
     def set_activity_sweep(self, task_number, times):
         self.activity_sweep = (task_number, times)
 
+    def list_activity_modules(self):
+        return getattr(self, "activity_modules", [])
+
     def stop(self):
         pass
 
@@ -76,7 +79,10 @@ def make_engine(bridge=None, events=None, data_dir=None, **cfg_kwargs):
 
         data_dir = tempfile.mkdtemp(prefix="baas_plus_test_")
     config = AppConfig(data_dir=data_dir, **cfg_kwargs)
-    config.baas.current_activity = "SayBing"
+    # 默认给一个活动模块便于推图测试；显式传 current_activity 可覆盖（如 ""）
+    config.baas.current_activity = (cfg_kwargs.get("baas") or {}).get(
+        "current_activity", "SayBing"
+    )
     engine = Engine(config, bridge=bridge or FakeBridge(), fetcher=FakeFetcher(events))
     return engine
 
@@ -140,7 +146,8 @@ async def test_second_run_does_not_repeat_push(tmp_path):
     engine2 = make_engine(bridge2, events=[event], data_dir=str(tmp_path))
     await engine2.run_once()
     assert "explore_activity_story" not in bridge2.solves
-    assert bridge2.current_activity is None
+    # 第二次运行：进行中活动 → 活动扫荡阶段设置了模块（不重复推图）
+    assert bridge2.current_activity == "SayBing"
 
 
 @pytest.mark.asyncio
@@ -257,12 +264,75 @@ async def test_sweep_tasks_skipped_in_task_phase(tmp_path):
         baas={"tasks": ["cafe_reward", "normal_task", "activity_sweep"]},
         sweep={"normal_tasks": ["15-1-99"]},
     )
+    engine.config.baas.current_activity = ""  # 无手动配置 + 无进行中活动 → 不扫活动
     result = await engine.run_once()
     # 任务阶段只执行非扫荡任务；扫荡类在扫荡阶段按体力执行
     assert bridge.solves.count("cafe_reward") == 1
     assert bridge.solves.count("normal_task") == 1  # 仅扫荡阶段一次
     assert "activity_sweep" not in bridge.solves  # 无活动时不执行活动扫荡
     assert result.executed_tasks == ["restart", "cafe_reward"]
+
+
+@pytest.mark.asyncio
+async def test_activity_sweep_selects_running_activity(tmp_path):
+    """活动扫荡选择进行中的活动模块，不扫已结束（仅兑换可用）的旧活动"""
+    now = int(time.time())
+    running = GameEvent(
+        id=31, title="【复刻活动】「CODE：BOX」", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+    bridge = FakeBridge(ap=500)
+    bridge.activity_modules = ["CodeBox", "HighlanderRailroadExplosionIncident"]
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+    )
+    await engine.run_once()
+    # 标题含英文关键词 CODE/BOX → 匹配 CodeBox，而非 BAAS 默认的旧活动模块
+    assert bridge.current_activity == "CodeBox"
+    assert bridge.solves.count("activity_sweep") == 1
+
+
+@pytest.mark.asyncio
+async def test_activity_sweep_skips_unmatched(tmp_path):
+    """进行中活动无法匹配 BAAS 模块时不扫活动（避免扫已结束的旧活动模块）"""
+    now = int(time.time())
+    running = GameEvent(
+        id=32, title="纯中文活动标题", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+    bridge = FakeBridge(ap=500)
+    bridge.activity_modules = ["CodeBox", "SayBing"]
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+    )
+    await engine.run_once()
+    assert "activity_sweep" not in bridge.solves
+    assert bridge.current_activity is None
+
+
+@pytest.mark.asyncio
+async def test_collect_reward_after_all_tasks(tmp_path):
+    """领取日程（collect_reward）在所有任务（含 arena）完成后执行"""
+    bridge = FakeBridge(ap=100)
+    engine = make_engine(
+        bridge,
+        events=[],
+        data_dir=str(tmp_path),
+        baas={"tasks": ["cafe_reward", "collect_reward", "lesson"]},
+        sweep={"normal_tasks": []},
+    )
+    await engine.run_once()
+    idx = {t: i for i, t in enumerate(bridge.solves)}
+    # collect_reward 在 cafe_reward / lesson 之后，且在扫荡之前（任务阶段最后一个）
+    assert idx["collect_reward"] > idx["cafe_reward"]
+    assert idx["collect_reward"] > idx["lesson"]
+    assert idx["collect_reward"] < idx["activity_sweep"]
 
 
 async def _instant_sleep(delay):

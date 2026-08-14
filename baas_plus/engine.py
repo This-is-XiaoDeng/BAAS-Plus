@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -25,6 +26,9 @@ from .notifier import EmailNotifier
 from .store import Store
 
 logger = logging.getLogger(__name__)
+
+# 领取类任务：在所有任务（含 arena）执行完成后执行
+AFTER_ALL_TASKS = ("collect_reward",)
 
 if TYPE_CHECKING:
     from .store import Store as StoreType
@@ -125,6 +129,47 @@ class Engine:
 
     # ---- 扫荡 ----
 
+    async def _select_sweep_activity(self) -> str | None:
+        """选择要扫荡的活动模块
+
+        优先级：手动配置 current_activity > GameKee 进行中的活动启发式匹配
+        （标题英文关键词 ↔ BAAS 模块名）。全部失败返回 None（跳过活动扫荡，
+        避免扫到已结束/仅兑换可用的旧活动模块）。
+        """
+        if self.config.baas.current_activity:
+            return self.config.baas.current_activity
+        modules = self.bridge.list_activity_modules()
+        if not modules:
+            logger.warning("无法扫描 BAAS 活动模块列表")
+            return None
+        events = await self.fetcher.fetch_all()
+        now = _now()
+        for event in events:
+            if event.event_type == EventType.EVENT and event.start_at <= now <= event.end_at:
+                matched = self._match_activity_module(event.title, modules)
+                if matched:
+                    logger.info("活动扫荡选中模块: 「%s」 → %s", event.title, matched)
+                    return matched
+        return None
+
+    @staticmethod
+    def _match_activity_module(title: str, modules: list[str]) -> str | None:
+        """标题英文关键词 → BAAS 活动模块启发式匹配
+
+        GameKee 标题多为中文，BAAS 模块为英文名（如 CodeBox）；活动标题常含
+        英文活动名关键词（如「CODE：BOX」→ CodeBox）。提取标题中的英文/数字词
+        （>=3 字符），与模块名做子串匹配。
+        """
+        words = re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", title)
+        norm_words = {w.lower() for w in words}
+        if not norm_words:
+            return None
+        for mod in modules:
+            mn = mod.lower()
+            if any(w in mn for w in norm_words):
+                return mod
+        return None
+
     def has_active_activity(self) -> bool:
         """本地状态中是否存在进行中的活动类事件"""
         for row in self.store.list_activities(limit=500):
@@ -153,11 +198,13 @@ class Engine:
                 result.append(f"{region}-{mission}-{counts if counts != 'max' else max_per_task}")
         return result
 
-    def run_sweep(self) -> list[str]:
+    async def run_sweep(self) -> list[str]:
         """扫荡阶段：返回实际执行的扫荡任务
 
         BAAS-Plus 配置的扫荡列表为空时，回退读取 BAAS 配置中的
         mainlinePriority / hardPriority（格式一致："区域-关卡-次数"）。
+        活动扫荡：从 GameKee 进行中的活动里选择能映射到 BAAS 模块的活动，
+        避免扫到已结束（仅兑换可用）的活动模块。
         """
         swept: list[str] = []
         ap = self.bridge.get_ap()
@@ -166,16 +213,21 @@ class Engine:
             logger.warning("读取体力失败或体力为 0，跳过扫荡")
             return swept
 
-        activity_active = self.has_active_activity()
-
-        if activity_active and self.config.sweep.activity_first:
+        if self.config.sweep.activity_first:
             # 活动扫荡：-1 = BAAS 按当前 AP 自动计算最大次数
-            self.bridge.set_activity_sweep(
-                self.config.sweep.activity_task_number, times="-1"
-            )
-            self.bridge.solve("activity_sweep")
-            swept.append(f"activity:{self.config.sweep.activity_task_number}(auto)")
-            ap = self.bridge.get_ap()
+            module = await self._select_sweep_activity()
+            if module:
+                self.bridge.set_current_activity(module)
+                self.bridge.set_activity_sweep(
+                    self.config.sweep.activity_task_number, times="-1"
+                )
+                self.bridge.solve("activity_sweep")
+                swept.append(f"activity:{self.config.sweep.activity_task_number}(auto,{module})")
+                ap = self.bridge.get_ap()
+            else:
+                logger.warning(
+                    "活动优先已开启，但无法确定进行中活动的 BAAS 模块，跳过活动扫荡"
+                )
 
         normal_tasks = self.config.sweep.normal_tasks
         hard_tasks = self.config.sweep.hard_tasks
@@ -281,16 +333,19 @@ class Engine:
                 self.result.status = "partial"
 
             # 4. 勾选任务（扫荡类任务由扫荡阶段统一调度）；arena 与常规任务穿插：
-            #    arena 冷却等待（asyncio.sleep）期间让出事件循环，常规任务继续跑
+            #    arena 冷却等待（asyncio.sleep）期间让出事件循环，常规任务继续跑；
+            #    领取类任务（collect_reward）在全部任务（含 arena）之后执行
             sweepless = [t for t in self.config.baas.tasks if t not in SWEEP_TASKS]
+            regular = [t for t in sweepless if t != "arena" and t not in AFTER_ALL_TASKS]
+            after = [t for t in sweepless if t in AFTER_ALL_TASKS]
             if "arena" in sweepless:
-                regular = [t for t in sweepless if t != "arena"]
                 await asyncio.gather(self._run_regular_tasks(regular), self._run_arena())
             else:
-                await self._run_regular_tasks(sweepless)
+                await self._run_regular_tasks(regular)
+            await self._run_regular_tasks(after)
 
             # 5. 扫荡
-            self.result.swept = self.run_sweep()
+            self.result.swept = await self.run_sweep()
 
             self.result.summary = self._build_summary()
             self.store.finish_record(record_id, self.result.status, self.result.summary, self._record_detail())
