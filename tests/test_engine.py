@@ -220,6 +220,33 @@ def test_has_active_activity_excludes_assault(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_not_started_activity_not_pushed(tmp_path):
+    """未开始的活动不推送、不标记已见（等正式开始后下一次执行再检测）"""
+    from baas_plus.store import Store
+
+    now = int(time.time())
+    not_started = GameEvent(
+        id=21, title="预告活动", start_at=now + 3600, end_at=now + 86400, event_type=EventType.EVENT
+    )
+    engine = make_engine(FakeBridge(), events=[not_started], data_dir=str(tmp_path))
+    result = await engine.run_once()
+    # 未开始：不推图、不算新活动
+    assert result.new_activities == []
+    assert result.pushed_activities == []
+    # 未开始：不标记已见 → 活动开始时再跑一次会被检测为新活动
+    store = Store(engine.config.data_path / "baas_plus.db")
+    assert not store.is_activity_seen(not_started)
+
+    started = GameEvent(
+        id=21, title="预告活动", start_at=now - 10, end_at=now + 86400, event_type=EventType.EVENT
+    )
+    engine2 = make_engine(FakeBridge(), events=[started], data_dir=str(tmp_path))
+    result2 = await engine2.run_once()
+    assert len(result2.new_activities) == 1
+    assert "explore_activity_story" in engine2.bridge.solves
+
+
+@pytest.mark.asyncio
 async def test_sweep_tasks_skipped_in_task_phase(tmp_path):
     """勾选任务里的扫荡类任务（normal_task/activity_sweep）不重复执行，统一由扫荡阶段调度"""
     bridge = FakeBridge(ap=200)

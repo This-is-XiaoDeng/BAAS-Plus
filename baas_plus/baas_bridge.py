@@ -391,12 +391,25 @@ class BaasBridge:
         }
 
     def stop(self) -> None:
+        """停止 BAAS 线程并关闭模拟器（执行完成后调用）"""
         if self.baas_thread is not None:
             try:
                 self.baas_thread.stop_thread() if hasattr(self.baas_thread, "stop_thread") else None
             except Exception as exc:  # noqa: BLE001
                 logger.warning("停止 BAAS 线程异常: %s", exc)
         self.baas_thread = None
+        self._stop_simulator()
+
+    def _stop_simulator(self) -> None:
+        """关闭模拟器（对齐启动时的类型/实例；未启动/已关闭时幂等）"""
+        try:
+            import_baas(self.config.baas.repo_dir)
+            from core.device.emulator_manager.stop_simulator import stop_simulator_classic
+
+            logger.info("关闭模拟器: %s 实例 %s", self.config.simulator.type, self.config.simulator.instance)
+            stop_simulator_classic(self.config.simulator.type, self.config.simulator.instance)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("关闭模拟器异常（可忽略）: %s", exc)
 
 
 def compute_sweep_times(ap: int, base_cost: int, max_times: int) -> int:

@@ -67,13 +67,22 @@ class Engine:
     # ---- 活动检测 ----
 
     async def detect_new_activities(self) -> list[GameEvent]:
-        """拉取活动并返回未处理过的新活动（同时更新本地状态为已见）"""
+        """拉取活动并返回未处理过的新活动（同时更新本地状态为已见）
+
+        只关注已开始且未结束的活动：未开始的（预告/尚未开启）不推送、
+        不标记已见，等活动正式开始后的下一次执行再检测并推送。
+        """
         events = await self.fetcher.fetch_all()
-        new_events = [e for e in events if not self.store.is_activity_seen(e)]
-        for event in events:
+        now = _now()
+        # start_at 缺失（0）视为已开始，避免误杀无开始时间的活动
+        active = [e for e in events if e.start_at <= now <= e.end_at]
+        new_events = [e for e in active if not self.store.is_activity_seen(e)]
+        for event in active:
             self.store.mark_activity_seen(event)
-        # 活动类新事件记录为已见；若将触发推图，稍后更新为 pushed
-        logger.info("活动检测: 共 %d 个事件，新事件 %d 个", len(events), len(new_events))
+        logger.info(
+            "活动检测: 共 %d 个事件，进行中 %d 个，新事件 %d 个（未开始/已结束不推送）",
+            len(events), len(active), len(new_events),
+        )
         return new_events
 
     def resolve_activity_module(self, event: GameEvent) -> str | None:
