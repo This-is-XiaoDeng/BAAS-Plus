@@ -89,6 +89,7 @@
       </select>
       <label>BA 游戏包名</label><input id="baas_game_package" value="com.RoamingStar.BlueArchive" placeholder="com.RoamingStar.BlueArchive">
       <label>手动指定活动模块（可选，自动映射未实现时使用）</label><input id="baas_current_activity" placeholder="如 SayBing">
+      <label>DeepLX 翻译地址（纯中文标题翻译匹配，留空禁用）</label><input id="baas_deeplx_url" value="http://127.0.0.1:1188" placeholder="http://127.0.0.1:1188">
     </div>
 
     <div class="card">
@@ -208,6 +209,7 @@ async function loadConfig() {
   $('baas_server').value = cfg.baas.server;
   $('baas_game_package').value = cfg.baas.game_package_name || 'com.RoamingStar.BlueArchive';
   $('baas_current_activity').value = cfg.baas.current_activity;
+  $('baas_deeplx_url').value = cfg.baas.deeplx_url || 'http://127.0.0.1:1188';
   $('act_push_story').checked = cfg.activity.push_story_on_new;
   $('act_push_mission').checked = cfg.activity.push_mission_on_new;
   $('act_push_challenge').checked = cfg.activity.push_challenge_on_new;
@@ -277,6 +279,7 @@ function collectConfig() {
       server: $('baas_server').value,
       game_package_name: $('baas_game_package').value.trim() || 'com.RoamingStar.BlueArchive',
       current_activity: $('baas_current_activity').value.trim(),
+      deeplx_url: $('baas_deeplx_url').value.trim(),
       tasks: checked,
     },
     activity: {

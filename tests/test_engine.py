@@ -343,6 +343,105 @@ async def test_activity_sweep_alias_match(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_activity_sweep_deeplx_translate(tmp_path, monkeypatch):
+    """纯中文标题通过 DeepLX 翻译匹配到 BAAS 模块"""
+    now = int(time.time())
+    running = GameEvent(
+        id=34, title="全新活动【中文标题无映射】", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+    bridge = FakeBridge(ap=500)
+    bridge.activity_modules = ["CodeBox", "livelyAndJoyfulWalkingTour"]
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+    )
+
+    async def fake_translate(title):
+        return "Lively and Joyful Walking Tour"
+
+    monkeypatch.setattr(engine, "_translate_title", fake_translate)
+    await engine.run_once()
+    assert bridge.current_activity == "livelyAndJoyfulWalkingTour"
+
+
+@pytest.mark.asyncio
+async def test_activity_sweep_deeplx_fail_fallback(tmp_path, monkeypatch):
+    """翻译失败（返回 None）时跳过活动扫荡，不阻断流程"""
+    now = int(time.time())
+    running = GameEvent(
+        id=35, title="全新活动【翻译失败】", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+    bridge = FakeBridge(ap=500)
+    bridge.activity_modules = ["CodeBox", "livelyAndJoyfulWalkingTour"]
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+    )
+
+    async def fake_translate(title):
+        return None
+
+    monkeypatch.setattr(engine, "_translate_title", fake_translate)
+    await engine.run_once()
+    assert "activity_sweep" not in bridge.solves
+    assert bridge.current_activity is None
+
+
+@pytest.mark.asyncio
+async def test_deeplx_cooldown_after_503(tmp_path, monkeypatch):
+    """DeepL 限流（503）后进入冷却，不再请求翻译"""
+    now = int(time.time())
+    running = GameEvent(
+        id=36, title="限流测试活动", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+    bridge = FakeBridge(ap=500)
+    bridge.activity_modules = ["CodeBox"]
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+    )
+    calls = {"n": 0}
+
+    async def fake_translate(title):
+        calls["n"] += 1
+        engine._deeplx_cooldown_until = time.time() + 600
+        return None
+
+    monkeypatch.setattr(engine, "_translate_title", fake_translate)
+    await engine.run_once()
+    # 第二次运行：冷却中，翻译不再被调用
+    bridge2 = FakeBridge(ap=500)
+    bridge2.activity_modules = ["CodeBox"]
+    engine2 = make_engine(
+        bridge2,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+    )
+    engine2._deeplx_cooldown_until = time.time() + 600
+
+    async def fake_translate2(title):
+        # 模拟真实 _translate_title 的冷却检查（在函数最前）
+        if time.time() < engine2._deeplx_cooldown_until:
+            return None
+        calls["n"] += 1
+        return "Lively and Joyful Walking Tour"
+
+    monkeypatch.setattr(engine2, "_translate_title", fake_translate2)
+    await engine2.run_once()
+    assert calls["n"] == 1  # 冷却期间未调用翻译
+
+
+@pytest.mark.asyncio
 async def test_collect_reward_after_all_tasks(tmp_path):
     """领取日程（collect_reward）在所有任务（含 arena）完成后执行"""
     bridge = FakeBridge(ap=100)
