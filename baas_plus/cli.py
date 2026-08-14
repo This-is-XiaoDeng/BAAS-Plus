@@ -21,13 +21,17 @@ from .engine import Engine
 from .notifier import EmailNotifier
 from .store import Store
 
+# 日志目录（data/ 被 .gitignore 排除，clone 后不存在，必须先创建）
+_LOG_DIR = Path(__file__).resolve().parent.parent / "data"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s][%(name)s / %(levelname)s]: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(Path(__file__).resolve().parent.parent / "data" / "baas_plus.log", encoding="utf-8"),
+        logging.FileHandler(_LOG_DIR / "baas_plus.log", encoding="utf-8"),
     ],
 )
 logger = logging.getLogger("baas_plus.cli")
