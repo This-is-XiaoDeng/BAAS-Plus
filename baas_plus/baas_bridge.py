@@ -5,12 +5,15 @@
 - 初始化 Baas_thread、执行任务（solve）、读取体力（get_ap）
 - 运行时修改 BAAS 配置（扫荡列表 / 活动模块 / 扫荡次数）
 
-BAAS 是可选依赖（poetry extra: baas），仅在 Windows 部署环境安装；
+BAAS 是可选依赖（官方 cli.example.py 同款用法）：
+BAAS-Plus 作为库安装进 BAAS 的运行环境，从 BAAS 源码根目录运行（python -m baas_plus.cli ...），
+此时 core 可直接 import、config/ 相对路径可用；也可配置 baas.repo_dir 指定 BAAS 源码目录。
 本模块所有函数在 BAAS 未安装时抛出带指引的 RuntimeError。
 """
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -23,39 +26,112 @@ if TYPE_CHECKING:
 
 BAAS_IMPORT_ERROR = (
     "BAAS (blue_archive_auto_script) 未安装或无法导入。"
-    "请确认：1) 已在 Windows 环境执行 poetry install -E baas（或 pip install 对应分支）；"
-    "2) 配置 baas.repo_dir 指向 BAAS 源码目录。"
+    "请确认：1) 在 BAAS 源码根目录运行（python -m baas_plus.cli ...）；"
+    "2) 配置 baas.repo_dir 指向 BAAS 源码目录（如 D:\\BAAS）。"
 )
 
 
 def import_baas(repo_dir: str = "") -> Any:
-    """惰性导入 BAAS 模块；repo_dir 非空时优先加入 sys.path"""
+    """惰性导入 BAAS 模块
+
+    优先将 repo_dir（若配置）加入 sys.path 并切换 cwd 到 BAAS 源码根目录
+    （BAAS 大量使用相对路径读 config/，必须从 BAAS 根运行）；未配置时假定
+    BAAS-Plus 已安装进 BAAS 环境（cwd 即 BAAS 根）。
+    """
     if repo_dir:
         if repo_dir not in sys.path:
             sys.path.insert(0, repo_dir)
+        if os.path.abspath(os.getcwd()) != os.path.abspath(repo_dir):
+            os.chdir(repo_dir)
     try:
-        from core import emulator_manager  # noqa: F401
         from core.Baas_thread import Baas_thread
         from core.config.config_set import ConfigSet
         from main import Main
-
-        return Baas_thread, ConfigSet, Main
     except ImportError as exc:
         # 区分两类原因：BAAS 本身不在路径 vs 依赖缺失
         if "No module named" in str(exc):
             missing = str(exc).split("'")[1] if "'" in str(exc) else str(exc)
             raise RuntimeError(
                 f"无法导入 BAAS 模块（缺少 {missing}）。\n"
-                f"当前 repo_dir={repo_dir or '(空，用已安装包)'}，sys.path 前两项: {sys.path[:2]}\n"
-                f"请确认：1) 在 poetry 虚拟环境内执行 poetry install -E baas（不要用系统 pip）；"
-                f"2) 或配置 baas.repo_dir 指向 BAAS 源码目录（如 D:\\BAAS）。"
-                f"原始错误: {exc}"
+                f"当前 repo_dir={repo_dir or '(空，假定已安装进 BAAS 环境)'}，"
+                f"sys.path 前两项: {sys.path[:2]}\n"
+                f"请确认：1) BAAS-Plus 已安装进 BAAS 的运行环境，且从 BAAS 源码根目录"
+                f"运行（python -m baas_plus.cli webui）；2) 或配置 baas.repo_dir 指向 BAAS "
+                f"源码目录（如 D:\\BAAS）。原始错误: {exc}"
             ) from exc
         raise RuntimeError(
             f"BAAS 模块导入失败（可能是依赖缺失或不兼容，如 numpy/opencv 与当前 Python 版本不匹配）。"
-            f"原始错误: {exc}\n请确认 BAAS 的依赖已全部安装（poetry install -E baas），"
+            f"原始错误: {exc}\n请确认 BAAS 的依赖已全部安装（pip install -r requirements.txt），"
             f"且 Python 版本受支持（BAAS 1.4.3 需 Python ≤3.12）。"
         ) from exc
+    # 导入成功：修复 static.json 字段与代码不匹配的问题（幂等，仅字段不一致时修改）
+    repair_static_config()
+    return Baas_thread, ConfigSet, Main
+
+
+def repair_static_config() -> None:
+    """修复 BAAS config/static.json 与当前代码 StaticConfig 字段不匹配的问题
+
+    上游 release 包的 static.json 可能与仓库源码字段不一致（例如 v1.4.3 的
+    steam_app_process_name vs 源码的 PC_app_process_name），导致 ConfigSet 初始化
+    抛 TypeError。以源码内置 STATIC_DEFAULT_CONFIG 为准对齐：删除多余键、补齐缺失键。
+    调用前需保证 cwd 已是 BAAS 源码根目录（import_baas 已处理）。
+    """
+    try:
+        from core.config.default_config import STATIC_DEFAULT_CONFIG
+        from core.config.generated_static_config import StaticConfig
+    except ImportError:
+        return
+    import dataclasses
+    import json
+
+    fields = {f.name for f in dataclasses.fields(StaticConfig)}
+    default = json.loads(STATIC_DEFAULT_CONFIG)
+    _align_json_file(os.path.join(os.getcwd(), "config", "static.json"), fields, default, "static.json")
+
+
+def repair_user_config(config_dir: str) -> None:
+    """修复 BAAS config/<config_dir>/config.json 与代码 Config 字段不匹配的问题
+
+    同样处理上游 release 配置缺新字段的情况（如 v1.4.3 缺 ArenaStopFightWhenRank1 等），
+    以源码 DEFAULT_CONFIG 补齐缺失字段（已有用户字段保留）。
+    """
+    try:
+        from core.config.default_config import DEFAULT_CONFIG
+        from core.config.generated_user_config import Config
+    except ImportError:
+        return
+    import dataclasses
+    import json
+
+    fields = {f.name for f in dataclasses.fields(Config)}
+    default = json.loads(DEFAULT_CONFIG)
+    _align_json_file(os.path.join(os.getcwd(), "config", config_dir, "config.json"), fields, default, f"config/{config_dir}/config.json")
+
+
+def _align_json_file(path: str, fields: set[str], default: dict, label: str) -> None:
+    """对齐 JSON 配置文件字段：缺失补齐（用默认值）、多余删除（幂等）"""
+    import json
+
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, ensure_ascii=False, indent=2)
+        logger.info("已生成 %s（默认模板）", label)
+        return
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    extra = set(data.keys()) - fields
+    missing = fields - set(data.keys())
+    if not extra and not missing:
+        return
+    for key in extra:
+        data.pop(key)
+    for key in missing:
+        data[key] = default.get(key)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    logger.info("已修复 %s: 移除 %s, 补齐 %s", label, sorted(extra), sorted(missing))
 
 
 class BaasBridge:
@@ -71,14 +147,15 @@ class BaasBridge:
 
     def start_simulator(self) -> str:
         """启动模拟器并返回 ADB 地址（如 127.0.0.1:16384）"""
-        Baas_thread, _, _ = import_baas(self.config.baas.repo_dir)
-        from core import emulator_manager
+        import_baas(self.config.baas.repo_dir)
+        # BAAS 1.4.x 中 emulator_manager 是 core/device/emulator_manager 包
+        from core.device.emulator_manager.start_simulator import start_simulator_classic
 
         sim_type = self.config.simulator.type
         instance = self.config.simulator.instance
         logger.info("启动模拟器: %s 实例 %s", sim_type, instance)
 
-        adb_address = emulator_manager.start_simulator_classic(sim_type, instance)
+        adb_address = start_simulator_classic(sim_type, instance)
         if not adb_address:
             raise RuntimeError(f"模拟器启动失败或未返回 ADB 地址: {sim_type} #{instance}")
         logger.info("模拟器已启动，ADB 地址: %s", adb_address)
@@ -90,9 +167,10 @@ class BaasBridge:
     def create_baas(self, adb_address: str | None = None) -> Baas_thread:
         """初始化 Baas_thread（OCR + 配置加载；首次较慢）"""
         Baas_thread, ConfigSet, Main = import_baas(self.config.baas.repo_dir)
+        repair_user_config(self.config.baas.config_dir)
 
-        # 无 GUI 模式初始化 OCR（参考官方 cli.example.py 用法）
-        self._main = Main(ocr_needed=["NUM", "Global", self.config.baas.server])
+        # 无 GUI 模式初始化 OCR（对齐 BAAS 1.4.x OCR 语言：en-us 数字/英文 + zh-cn 中文）
+        self._main = Main(ocr_needed=["en-us", "zh-cn"])
 
         config_set = ConfigSet(config_dir=self.config.baas.config_dir)
         baas = Baas_thread(config_set, None, None, None)
@@ -158,6 +236,7 @@ class BaasBridge:
     def check_baas(self) -> dict[str, Any]:
         """轻量验证 BAAS：导入 + 配置加载 + 线程构造（不启动模拟器/OCR，供 WebUI 测试按钮）"""
         Baas_thread, ConfigSet, _ = import_baas(self.config.baas.repo_dir)
+        repair_user_config(self.config.baas.config_dir)
         config_set = ConfigSet(config_dir=self.config.baas.config_dir)
         baas = Baas_thread(config_set, None, None, None)
         version = getattr(baas, "version", None) or getattr(baas, "__version__", None)

@@ -15,12 +15,9 @@ uvicorn = { extras = ["standard"], version = "^0.34" }
 httpx = "^0.28"
 pydantic = "^2.10"
 
-# BAAS 本体（GPL-3.0，仅 Windows 部署时需要；AGPL §13 允许与 GPL-3 作品结合）
-# 核心引擎通过惰性导入使用，Linux 开发/测试环境无需安装
-blue-archive-auto-script = { git = "https://github.com/pur1fying/blue_archive_auto_script.git", branch = "master", optional = true }
-
-[tool.poetry.extras]
-baas = ["blue-archive-auto-script"]
+# BAAS-Plus 是独立库，不内置 BAAS（blue_archive_auto_script）。
+# 部署时将其安装进 BAAS 的运行环境（见 README「部署」），
+# 从 BAAS 源码根目录运行即可 import core；也可配置 baas.repo_dir 指定 BAAS 源码路径。
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3"

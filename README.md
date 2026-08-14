@@ -16,21 +16,30 @@
 
 ## 🚀 快速开始（Windows）
 
-前置：Windows + 模拟器 + [Poetry](https://python-poetry.org/)
+前置：Windows + 模拟器 + 可运行的 [BAAS](https://github.com/pur1fying/blue_archive_auto_script) 环境
+（BAAS 源码已装好依赖，能跑官方 GUI 即可；`config/` 目录需存在，release 包自带）
 
 ```bash
+# 1) 拉取 BAAS-Plus（仅项目自身，不内置 BAAS）
 git clone https://github.com/This-is-XiaoDeng/BAAS-Plus.git
-cd BAAS-Plus
-poetry install -E baas          # 安装依赖（含 BAAS 本体）
-poetry run python -m baas_plus.cli webui    # 启动 WebUI
+
+# 2) 把 BAAS-Plus 装进 BAAS 的运行环境（editable，与 cli.example.py 同款用法）
+cd D:\BAAS                    # BAAS 源码根目录（Python 3.12 + 依赖已就绪）
+pip install -e D:\BAAS-Plus
+
+# 3) 从 BAAS 根目录启动 WebUI（import core 与 config/ 相对路径都可用）
+python -m baas_plus.cli webui
 ```
 
 打开 <http://127.0.0.1:18080> 完成配置后：
 
 ```bash
-poetry run python -m baas_plus.cli run         # 立即执行一次完整流程
-poetry run python -m baas_plus.cli test-email  # 测试邮件通知
+python -m baas_plus.cli run         # 立即执行一次完整流程
+python -m baas_plus.cli test-email  # 测试邮件通知
 ```
+
+> 也支持不安装进 BAAS 环境：在 WebUI 配置 `baas.repo_dir` 指向 BAAS 源码目录，
+> 引擎会自动把它加入 sys.path 并切换工作目录（两种方式等价）。
 
 ### 定时执行（Windows 计划任务）
 
@@ -38,14 +47,14 @@ poetry run python -m baas_plus.cli test-email  # 测试邮件通知
 
 ```bat
 @echo off
-cd /d D:\BAAS-Plus
-poetry run python -m baas_plus.cli run
+cd /d D:\BAAS
+python -m baas_plus.cli run
 ```
 
 注册每天 05:00 自动执行：
 
 ```
-schtasks /create /tn "BAAS-Plus-Daily" /tr "D:\BAAS-Plus\run.bat" /sc daily /st 05:00
+schtasks /create /tn "BAAS-Plus-Daily" /tr "D:\BAAS\run.bat" /sc daily /st 05:00
 ```
 
 ## 🖥 WebUI 配置
@@ -84,7 +93,8 @@ baas_plus/
 ## ⚠️ 已知限制
 
 - 活动推图依赖 BAAS 社区维护的活动模块（`module/activities/`，每个活动一个插件）。GameKee 活动标题为中文，无法自动对应模块名，新活动需在配置中指定 `baas.current_activity`；未指定时记录活动并跳过推图
-- 调度器可在任意平台开发测试，实际运行需 Windows + 模拟器
+- 实际运行需 Windows + 模拟器 + 完整 BAAS 环境；调度器本身可在任意平台开发测试（不 import core 的部分）
+- BAAS 上游 release 包与源码偶尔字段不同步（如 v1.4.3 的 `steam_app_process_name` vs 源码 `PC_app_process_name`），BAAS-Plus 首次调用时会自动对齐 `config/static.json` 与 `config/<server>/config.json` 字段（幂等，保留用户已有配置）
 
 ## 📄 许可证
 

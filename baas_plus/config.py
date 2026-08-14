@@ -59,8 +59,8 @@ class BaasConfig(BaseModel):
 
     # BAAS 仓库本地路径；留空则尝试从已安装包导入（poetry extra: baas）
     repo_dir: str = ""
-    # BAAS 的配置目录名（对应 BAAS 根目录 config/ 下的子目录，如 "jp_hoshino"）
-    config_dir: str = "default"
+    # BAAS 的配置目录名（BAAS 根目录 config/ 下的子目录，release 包自带 cn/global/jp/steam）
+    config_dir: str = "cn"
     # 服务器：cn / in / jp（影响活动数据与 BAAS 内部判断）
     server: Literal["cn", "in", "jp"] = "cn"
     # 勾选要执行的任务（顺序执行）
