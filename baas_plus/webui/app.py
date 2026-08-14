@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -137,7 +138,13 @@ def create_app(config: AppConfig) -> FastAPI:
     @app.post("/api/run")
     async def run(_: RunBody | None = None) -> dict[str, Any]:
         engine = Engine(config, store=store)
-        result = await engine.run_once()
+        try:
+            # 600s 超时：BAAS 初始化（OCR 服务器/设备连接）卡住时返回明确错误，
+            # 而不是让请求无限挂起；超时后 run_once 协程仍在后台，但不阻塞 UI
+            result = await asyncio.wait_for(engine.run_once(), timeout=600)
+        except asyncio.TimeoutError:
+            logger.error("执行超时（>600s）：大概率卡在 BAAS 初始化（OCR 服务器/设备连接），详见 data/baas_plus.log 的步骤日志")
+            raise HTTPException(status_code=408, detail="执行超时：大概率卡在 BAAS 初始化（OCR 服务器/设备连接），请查看 data/baas_plus.log 定位卡点") from None
         return {
             "status": result.status,
             "summary": result.summary,

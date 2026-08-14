@@ -38,6 +38,12 @@ def import_baas(repo_dir: str = "") -> Any:
     （BAAS 大量使用相对路径读 config/，必须从 BAAS 根运行）；未配置时假定
     BAAS-Plus 已安装进 BAAS 环境（cwd 即 BAAS 根）。
     """
+    # 防御：BAAS 内部大量 requests.get() 不带 timeout，OCR 服务器/设备接口
+    # 无响应时会无限挂起。设置 socket 默认超时兜底（httpx 等显式超时不受影响）
+    import socket
+
+    if socket.getdefaulttimeout() is None:
+        socket.setdefaulttimeout(20)
     if repo_dir:
         if repo_dir not in sys.path:
             sys.path.insert(0, repo_dir)
@@ -210,16 +216,22 @@ class BaasBridge:
         repair_user_config(self.config.baas.config_dir)
 
         # 无 GUI 模式初始化 OCR（对齐 BAAS 1.4.x OCR 语言：en-us 数字/英文 + zh-cn 中文）
+        logger.info("初始化 BAAS Main（启动 OCR 服务器，首次可能较慢）...")
         self._main = Main(ocr_needed=["en-us", "zh-cn"])
+        logger.info("BAAS Main 初始化完成")
 
         config_set = ConfigSet(config_dir=self.config.baas.config_dir)
+        logger.info("ConfigSet 加载完成: config_dir=%s", self.config.baas.config_dir)
         baas = Baas_thread(config_set, None, None, None)
         # 必须先 set_ocr 再 init_all_data：set_ocr 会设置 ocr_img_pass_method
         # （本地 OCR=0 共享内存/远程=1）与 shared_memory_name，init_all_data →
         # init_device → check_resolution 依赖它；直接赋值 baas.ocr 会绕过该逻辑，
         # 导致 OCR 调用时报 Invalid pass_method None
         baas.set_ocr(self._main.ocr)
+        logger.info("OCR 已设置（pass_method=%s）", baas.ocr_img_pass_method)
+        logger.info("开始 Baas_thread.init_all_data（设备连接/分辨率/资源加载）...")
         baas.init_all_data()
+        logger.info("Baas_thread.init_all_data 完成")
         if adb_address:
             baas.set_adb_address(adb_address) if hasattr(baas, "set_adb_address") else None
         self.baas_thread = baas
