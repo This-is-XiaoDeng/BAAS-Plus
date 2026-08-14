@@ -290,6 +290,10 @@ async function testEmail() {
   catch (e) { toast('请求失败: ' + e.message, false); }
 }
 
+function typeLabel(t) {
+  return { event: '🎉 活动', assault: '⚔️ 总力战/大决战', card: '🎴 卡池', other: 'ℹ️ 其他' }[t] || t;
+}
+
 async function testSimulator() {
   $('test_result').style.display = 'block';
   $('test_result').textContent = '正在启动模拟器（可能需要几十秒）…';
@@ -328,7 +332,7 @@ async function loadActivities() {
     const render = (events, isSweepable) => events.length ? `
       <table><thead><tr><th>类型</th><th>标题</th><th>开始</th><th>结束</th><th>状态</th></tr></thead>
       <tbody>${events.map(e => `
-        <tr><td>${isSweepable ? '🎉 活动' : 'ℹ️ ' + e.event_type}</td><td>${e.title}</td>
+        <tr><td>${typeLabel(e.event_type)}</td><td>${e.title}</td>
         <td>${fmt(e.start_at)}</td><td>${fmt(e.end_at)}</td>
         <td>${seen.has(e.event_type + ':' + e.id) ? '<span class="tag info">已处理</span>' : '<span class="tag warn">🆕 新</span>'}
             ${e.end_at < now ? '<span class="tag info">已结束</span>' : ''}</td></tr>`).join('')}

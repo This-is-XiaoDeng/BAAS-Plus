@@ -20,8 +20,17 @@ SERVER_ID_MAP: dict[str, int] = {"cn": 16, "in": 17, "jp": 15}
 
 class EventType(str, Enum):
     CARD = "card"  # 卡池
-    EVENT = "event"  # 常规活动
-    ASSAULT = "assault"  # 总力战/大决战
+    EVENT = "event"  # 常规活动（GameKee activity_kind_id=14，BAAS 可推图/扫荡）
+    ASSAULT = "assault"  # 总力战/大决战（kind=15）
+    OTHER = "other"  # 掉落加成/总决算/无限制决战/综合战术测试/主线故事等（无需扫荡）
+
+
+# GameKee activity_kind_id → 事件类型（仅 kind=14 常规活动可扫荡）
+KIND_EVENT = 14
+KIND_ASSAULT = 15
+SWEEPABLE_KINDS = frozenset({KIND_EVENT})
+# kind=14 中无关卡可扫的标题关键词（常驻化更新等纯公告）
+NON_SWEEPABLE_TITLE_KEYWORDS = ("常驻化", "指引任务")
 
 
 @dataclass(frozen=True)
@@ -96,7 +105,7 @@ class ActivityFetcher:
         return events
 
     async def fetch_activities(self) -> list[GameEvent]:
-        """常规活动"""
+        """常规活动（按 activity_kind_id 精确分类：14=可扫荡活动，15=总力战/大决战，其余=无需扫荡）"""
         data = await self._fetch_json(
             f"{GAMEKEE_API_BASE}/activity/page-list",
             {
@@ -113,13 +122,21 @@ class ActivityFetcher:
         for item in data.get("data", []):
             if item.get("end_at", 0) < time.time():
                 continue
+            kind = item.get("activity_kind_id") or 0
+            title = item.get("title", "未知活动")
+            if kind in SWEEPABLE_KINDS and not any(kw in title for kw in NON_SWEEPABLE_TITLE_KEYWORDS):
+                event_type = EventType.EVENT
+            elif kind == KIND_ASSAULT:
+                event_type = EventType.ASSAULT
+            else:
+                event_type = EventType.OTHER
             events.append(
                 GameEvent(
                     id=item.get("id", 0),
-                    title=item.get("title", "未知活动"),
+                    title=title,
                     start_at=item.get("begin_at", 0),
                     end_at=item.get("end_at", 0),
-                    event_type=EventType.EVENT,
+                    event_type=event_type,
                     picture=item.get("picture", ""),
                 )
             )

@@ -12,6 +12,7 @@ EVENT_ITEM = {
     "begin_at": int(time.time()) - 3600,
     "end_at": int(time.time()) + 86400,
     "picture": "http://x/1.png",
+    "activity_kind_id": 14,
 }
 CARD_ITEM = {
     "id": 2001,
@@ -19,6 +20,13 @@ CARD_ITEM = {
     "start_at": int(time.time()) - 3600,
     "end_at": int(time.time()) + 86400,
     "icon": "http://x/2.png",
+}
+BONUS_ITEM = {  # 掉落加成公告（kind=16），不需要扫荡
+    "id": 3001,
+    "title": "【任务（普通难度）】道具掉落量3倍",
+    "begin_at": int(time.time()) - 3600,
+    "end_at": int(time.time()) + 86400,
+    "activity_kind_id": 16,
 }
 
 
@@ -54,6 +62,54 @@ async def test_fetch_activities():
     assert events[0].event_type == EventType.EVENT
     assert events[0].title == "示例活动"
     assert events[0].is_active
+
+
+async def test_fetch_activities_classifies_by_kind():
+    """按 activity_kind_id 分类：14=可扫荡活动，16=掉落加成(其他)，15=总力战"""
+    items = [
+        {**EVENT_ITEM},
+        {**BONUS_ITEM},
+        {**EVENT_ITEM, "id": 4001, "title": "总力战：XXX", "activity_kind_id": 15},
+    ]
+
+    async def handler(request):
+        return httpx.Response(200, json={"data": items})
+
+    fetcher = ActivityFetcher("cn")
+
+    async def mock_fetch(url, params):
+        async with make_client(handler) as client:
+            resp = await client.get(url, params=params)
+            return resp.json()
+
+    fetcher._fetch_json = mock_fetch  # type: ignore[assignment]
+    events = await fetcher.fetch_activities()
+    by_type = {e.id: e.event_type for e in events}
+    assert by_type[1001] == EventType.EVENT
+    assert by_type[3001] == EventType.OTHER  # 掉落加成不算可扫荡活动
+    assert by_type[4001] == EventType.ASSAULT
+
+
+async def test_kind14_title_blacklist():
+    """kind=14 但标题含「常驻化」等关键词的纯公告不算可扫荡活动"""
+    items = [
+        {**EVENT_ITEM, "id": 5001, "title": "【龙武同舟】常驻化更新", "activity_kind_id": 14},
+        {**EVENT_ITEM, "id": 5002, "title": "指引任务【XX】", "activity_kind_id": 14},
+    ]
+
+    async def handler(request):
+        return httpx.Response(200, json={"data": items})
+
+    fetcher = ActivityFetcher("cn")
+
+    async def mock_fetch(url, params):
+        async with make_client(handler) as client:
+            resp = await client.get(url, params=params)
+            return resp.json()
+
+    fetcher._fetch_json = mock_fetch  # type: ignore[assignment]
+    events = await fetcher.fetch_activities()
+    assert all(e.event_type == EventType.OTHER for e in events)
 
 
 async def test_fetch_all_dedupe():

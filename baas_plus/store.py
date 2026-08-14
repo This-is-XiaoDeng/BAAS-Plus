@@ -72,6 +72,7 @@ class Store:
                     title = excluded.title,
                     start_at = excluded.start_at,
                     end_at = excluded.end_at,
+                    event_type = excluded.event_type,
                     pushed = MAX(activities.pushed, excluded.pushed),
                     pushed_at = COALESCE(activities.pushed_at, excluded.pushed_at)
                 """,
