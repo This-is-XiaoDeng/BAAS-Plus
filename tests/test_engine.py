@@ -1,6 +1,7 @@
 """核心引擎测试（mock bridge / fetcher，不依赖真实 BAAS 与网络）"""
 import time
 
+import json
 import pytest
 
 from baas_plus.activity import (
@@ -652,3 +653,54 @@ def test_parse_sweep_list_pollution():
     # 空/垃圾
     assert _parse_sweep_list("") == []
     assert _parse_sweep_list("garbage") == []
+
+
+def test_baas_sweep_config_file_only(tmp_path):
+    """纯文件读写 BAAS config.json：无需 Baas_thread，WebUI 保存配置场景可用"""
+    from baas_plus.baas_bridge import BaasBridge
+    from baas_plus.config import AppConfig
+
+    repo = tmp_path / "baas"
+    cfg_dir = repo / "config" / "cn"
+    cfg_dir.mkdir(parents=True)
+    cfg_file = cfg_dir / "config.json"
+    # 模拟主人实机的历史污染（嵌套转义垃圾数组）
+    cfg_file.write_text(
+        '{\n  "mainlinePriority": "5-1-3,6-1-2",\n'
+        '  "hardPriority": ["\'[\\\\\'[\\\\\\\\\\\\\'3-3-3", "\'9-3-3"]\n}',
+        encoding="utf-8",
+    )
+    bridge = BaasBridge(AppConfig(baas={"repo_dir": str(repo), "config_dir": "cn"}))
+
+    # 读取：自动清理污染，且不需要 Baas_thread
+    cfg = bridge.get_baas_sweep_config()
+    assert cfg == {"mainlinePriority": ["5-1-3", "6-1-2"], "hardPriority": ["3-3-3", "9-3-3"]}
+
+    # 写入：join 成字符串，恢复 BAAS 原生 str 类型
+    bridge.set_sweep_tasks(["5-1-5"], ["20-1-2"])
+    data = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert data["mainlinePriority"] == "5-1-5"
+    assert data["hardPriority"] == "20-1-2"
+    assert isinstance(data["hardPriority"], str)
+
+
+def test_sync_sweep_push_back_to_baas(tmp_path):
+    """保存配置时：BAAS-Plus 有扫荡配置则写回 BAAS config.json（用户确认后修改 BAAS）"""
+    from baas_plus.baas_bridge import BaasBridge
+    from baas_plus.config import AppConfig
+
+    repo = tmp_path / "baas2"
+    cfg_dir = repo / "config" / "cn"
+    cfg_dir.mkdir(parents=True)
+    cfg_file = cfg_dir / "config.json"
+    cfg_file.write_text('{\n  "mainlinePriority": "",\n  "hardPriority": ""\n}', encoding="utf-8")
+    config = AppConfig(
+        baas={"repo_dir": str(repo), "config_dir": "cn"},
+        sweep={"normal_tasks": ["5-1-3"], "hard_tasks": ["20-1-1"]},
+    )
+    bridge = BaasBridge(config)
+    result = bridge.sync_sweep_from_baas()
+    assert result["pushed"] is True
+    data = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert data["mainlinePriority"] == "5-1-3"
+    assert data["hardPriority"] == "20-1-1"

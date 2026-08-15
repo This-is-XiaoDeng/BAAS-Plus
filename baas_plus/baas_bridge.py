@@ -13,6 +13,7 @@ BAAS-Plus 作为库安装进 BAAS 的运行环境，从 BAAS 源码根目录运�
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 import sys
@@ -302,13 +303,55 @@ class BaasBridge:
 
     # ---- 配置读取 ----
 
+    def _baas_config_path(self) -> str | None:
+        """BAAS config.json 绝对路径（repo_dir/config/<config_dir>/config.json）"""
+        repo, cfg_dir = self.config.baas.repo_dir, self.config.baas.config_dir
+        if not repo or not cfg_dir:
+            return None
+        path = os.path.join(repo, "config", cfg_dir, "config.json")
+        return path if os.path.exists(path) else None
+
+    def _read_baas_config_file(self) -> dict | None:
+        """纯文件读取 BAAS config.json（不依赖 Baas_thread，供 WebUI/保存配置场景）"""
+        path = self._baas_config_path()
+        if path is None:
+            return None
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取 BAAS config.json 失败 %s: %s", path, exc)
+            return None
+
+    def _write_baas_config_file(self, data: dict) -> bool:
+        """纯文件写入 BAAS config.json（临时文件 + 原子替换）"""
+        path = self._baas_config_path()
+        if path is None:
+            return False
+        try:
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+            os.replace(tmp, path)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("写入 BAAS config.json 失败 %s: %s", path, exc)
+            return False
+
     def get_baas_sweep_config(self) -> dict[str, list[str]]:
         """读取 BAAS 配置中的扫荡列表（mainlinePriority / hardPriority）
 
         返回 region-mission-counts 干净列表（自动过滤历史嵌套转义污染）。
+        优先纯文件读取（无需 Baas_thread）；文件不可用时回退 ConfigSet。
         """
+        data = self._read_baas_config_file()
+        if data is not None:
+            return {
+                "mainlinePriority": _parse_sweep_list(data.get("mainlinePriority", "")),
+                "hardPriority": _parse_sweep_list(data.get("hardPriority", "")),
+            }
         if self.baas_thread is None:
-            raise RuntimeError("Baas_thread 未初始化")
+            raise RuntimeError("Baas_thread 未初始化且 config.json 不可读")
         config_set = self.baas_thread.config_set
         return {
             "mainlinePriority": _parse_sweep_list(config_set.get("mainlinePriority", "")),
@@ -530,9 +573,23 @@ class BaasBridge:
         产生嵌套引号污染（每次运行加深一层）。设置后重新解析 unfinished 任务
         列表（BAAS 扫荡任务实际消费的数据）。
         """
+        normal_str = ",".join(normal_tasks)
+        hard_str = ",".join(hard_tasks)
+        # 纯文件写入优先（无需 Baas_thread）；写入成功即返回，不刷新内存态
+        data = self._read_baas_config_file()
+        if data is not None:
+            data["mainlinePriority"] = normal_str
+            data["hardPriority"] = hard_str
+            if self._write_baas_config_file(data):
+                logger.info(
+                    "已写入 BAAS 扫荡列表(文件): normal=%s hard=%s",
+                    normal_tasks,
+                    hard_tasks,
+                )
+                return
         config_set = self._config_set()
-        config_set.set("mainlinePriority", ",".join(normal_tasks))
-        config_set.set("hardPriority", ",".join(hard_tasks))
+        config_set.set("mainlinePriority", normal_str)
+        config_set.set("hardPriority", hard_str)
         baas = self.baas_thread
         if baas is not None:
             refresh = getattr(baas, "refresh_common_tasks", None)
@@ -882,13 +939,15 @@ class BaasBridge:
                 patched_module.start_mission = orig_start
 
     def sync_sweep_from_baas(self) -> dict[str, Any]:
-        """从 BAAS 配置读取扫荡列表并同步到 BAAS-Plus 配置（普通/困难图为空时填充）
+        """BAAS ↔ BAAS-Plus 扫荡列表双向同步（纯文件读写，无需 Baas_thread/模拟器）
 
-        供 WebUI 保存「模拟器&BAAS」设置后调用；返回同步结果供前端提示。
+        供 WebUI 保存「模拟器&BAAS」设置后调用（用户确认动作）：
+        1. 从 BAAS config.json 读取扫荡列表，BAAS-Plus 对应项为空时填充
+        2. BAAS-Plus 已有配置且与 BAAS 不同时，写回 BAAS config.json
+        返回同步结果供前端提示。
         """
         if not self.config.baas.repo_dir:
             return {"ok": False, "reason": "baas.repo_dir 为空，无法读取 BAAS 配置"}
-        self.check_baas()  # 初始化 ConfigSet/Baas_thread（含配置自愈）
         baas_cfg = self.get_baas_sweep_config()
         normal = baas_cfg["mainlinePriority"]
         hard = baas_cfg["hardPriority"]
@@ -899,11 +958,24 @@ class BaasBridge:
         if not self.config.sweep.hard_tasks and hard:
             self.config.sweep.hard_tasks = hard
             changed = True
+        # 写回：BAAS-Plus 已有配置时同步到 BAAS（保存配置 = 用户确认）
+        pushed = False
+        if self.config.sweep.normal_tasks or self.config.sweep.hard_tasks:
+            if (
+                self.config.sweep.normal_tasks != normal
+                or self.config.sweep.hard_tasks != hard
+            ):
+                self.set_sweep_tasks(
+                    self.config.sweep.normal_tasks,
+                    self.config.sweep.hard_tasks,
+                )
+                pushed = True
         return {
             "ok": True,
             "normal_tasks": normal,
             "hard_tasks": hard,
             "applied": changed,
+            "pushed": pushed,
         }
 
     def stop(self) -> None:
