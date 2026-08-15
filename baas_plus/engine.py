@@ -248,6 +248,7 @@ class Engine:
         )
         start = time.time()
         last_text = ""
+        fail_polls = 0
         while time.time() - start < timeout:
             if module:
                 hit = self.bridge.match_banner_activity([module])
@@ -260,9 +261,24 @@ class Engine:
                 if any(self._fuzzy_contains(text, kw) for kw in keywords):
                     logger.info("轮播图 OCR 识别到目标活动（%s）", text)
                     return True
+            # 连续识别失败时周期性尝试关闭公告弹窗：BA 的公告弹窗（news 等）
+            # 可能遮挡轮播图区域导致模板/OCR 都识别不到（BAAS to_main_page 的
+            # RGB 结束特征不受弹窗影响，弹窗可能残留）；任务列表为空时没有
+            # BAAS 任务模块代为处理，这里主动关闭
+            fail_polls += 1
+            if fail_polls % 5 == 0:
+                logger.info(
+                    "轮播图连续 %d 次未识别到目标活动，尝试关闭可能的公告弹窗...",
+                    fail_polls,
+                )
+                try:
+                    self.bridge.close_announcement_popups(timeout=10)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("关闭公告弹窗异常: %s", exc)
             await asyncio.sleep(1)
         logger.warning(
-            "轮播图等待超时（%.0fs），未识别到目标活动关键词 %s；最近一次 OCR 文本: %r",
+            "轮播图等待超时（%.0fs），未识别到目标活动关键词 %s；最近一次 OCR 文本: %r。"
+            "若 BA 存在公告弹窗（news 公告栏），已尝试自动关闭但仍未恢复，请确认弹窗未遮挡轮播图区域",
             timeout,
             keywords,
             last_text,

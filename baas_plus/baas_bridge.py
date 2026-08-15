@@ -576,6 +576,65 @@ class BaasBridge:
         baas.u2.app_start(pkg, activity)
         logger.info("BAAS-Plus 启动游戏: package=%s activity=%s server=%s", pkg, activity, server)
         baas.to_main_page()
+        # to_main_page 的 co_detect 结束条件是右上角 main_page RGB 特征，公告弹窗
+        # （news 等）在屏幕中部/左上时不遮挡该特征 → co_detect 提前返回、弹窗残留；
+        # BAAS 官方由各任务模块自己合并 GAME_ONE_TIME_POP_UPS 处理弹窗，任务列表
+        # 为空时没有模块执行，这里主动检测并关闭，避免后续轮播图识别被弹窗干扰
+        self.close_announcement_popups(timeout=30)
+
+    def close_announcement_popups(self, timeout: float = 30.0) -> bool:
+        """检测并关闭 BA 的一次性公告弹窗（news / 公告栏等）
+
+        BAAS 的 to_main_page() 用 co_detect 以 main_page RGB 特征（右上角）作为
+        结束条件，弹窗不遮挡该区域时会提前返回；BAAS 官方任务模块（arena 等）
+        会把 picture.GAME_ONE_TIME_POP_UPS 合并进 img_reactions 处理，任务列表
+        为空时无人处理。这里复用 BAAS 的弹窗特征表主动检测并点击关闭。
+
+        返回 True 表示确认无弹窗残留（或已全部关闭）；False 表示超时仍有弹窗。
+        """
+        if self.baas_thread is None:
+            return False
+        baas = self.baas_thread
+        try:
+            import_baas(self.config.baas.repo_dir)
+            from core import image
+            from core.picture import GAME_ONE_TIME_POP_UPS
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("加载 BAAS 弹窗特征失败，跳过公告弹窗处理: %s", exc)
+            return False
+        server = getattr(baas, "server", "CN")
+        popups = GAME_ONE_TIME_POP_UPS.get(server, {})
+        if not popups:
+            logger.info("无公告弹窗特征表（server=%s）", server)
+            return True
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                baas.update_screenshot_array()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("刷新截图失败，终止公告弹窗检测: %s", exc)
+                break
+            hit = None
+            for feat, click in popups.items():
+                try:
+                    if image.compare_image(baas, feat):
+                        hit = (feat, click)
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if hit is None:
+                logger.info("未检测到公告弹窗，主界面干净")
+                return True
+            feat, (x, y) = hit
+            logger.info("检测到公告弹窗 %s，点击 (%d,%d) 关闭", feat, x, y)
+            try:
+                baas.click(x, y)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("点击关闭弹窗 %s 失败: %s", feat, exc)
+                break
+            time.sleep(1.5)
+        logger.warning("等待公告弹窗关闭超时（%.0fs），仍有弹窗可能残留", timeout)
+        return False
 
     def sync_sweep_from_baas(self) -> dict[str, Any]:
         """从 BAAS 配置读取扫荡列表并同步到 BAAS-Plus 配置（普通/困难图为空时填充）
