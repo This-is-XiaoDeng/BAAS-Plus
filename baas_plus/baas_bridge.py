@@ -219,6 +219,11 @@ class BaasBridge:
         logger.info("初始化 BAAS Main（启动 OCR 服务器，首次可能较慢）...")
         self._main = Main(ocr_needed=["en-us", "zh-cn"])
         logger.info("BAAS Main 初始化完成")
+        # BAAS 的 Main 构造可能重置 root logger 的 handlers（BAAS 自带日志配置），
+        # 重新确保 baas_plus 独立命名空间的 FileHandler 仍在，避免后续日志丢失
+        from .log_setup import setup_logging
+
+        setup_logging()
 
         config_set = ConfigSet(config_dir=self.config.baas.config_dir)
         logger.info("ConfigSet 加载完成: config_dir=%s", self.config.baas.config_dir)
@@ -369,6 +374,10 @@ class BaasBridge:
         返回最高分且达阈值的模块名；无候选/无模板/无截图返回 None。
         """
         if not candidates or self.baas_thread is None:
+            logger.warning(
+                "轮播图模板匹配跳过：%s",
+                "无候选活动" if not candidates else "baas_thread 未初始化（create_baas 未成功）",
+            )
             return None
         update = getattr(self.baas_thread, "update_screenshot_array", None)
         if callable(update):
@@ -384,6 +393,10 @@ class BaasBridge:
             int(region[0] * ratio) : int(region[2] * ratio),
         ]
         if banner.size == 0:
+            logger.warning(
+                "轮播图模板匹配跳过：轮播图区域裁剪为空（banner_region=%s）",
+                list(region),
+            )
             return None
         import cv2
 

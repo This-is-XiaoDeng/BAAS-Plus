@@ -21,22 +21,14 @@ from . import __version__
 from .activity import ActivityFetcher
 from .config import load_config
 from .engine import Engine
+from .log_setup import setup_logging
 from .notifier import EmailNotifier
 from .store import Store
 
-# 日志目录（data/ 被 .gitignore 排除，clone 后不存在，必须先创建）
-_LOG_DIR = Path(__file__).resolve().parent.parent / "data"
-_LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s][%(name)s / %(levelname)s]: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(_LOG_DIR / "baas_plus.log", encoding="utf-8"),
-    ],
-)
+# BAAS-Plus 独立日志（文件 data/baas_plus.log + 控制台）：
+# 用独立命名空间 baas_plus.*，避免 BAAS 的 Main() 初始化重置 root logger
+# 的 handlers 导致后续日志全部丢失（现象：日志断在「初始化 BAAS Main」之后）
+setup_logging()
 logger = logging.getLogger("baas_plus.cli")
 
 
