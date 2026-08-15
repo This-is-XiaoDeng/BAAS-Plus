@@ -43,6 +43,7 @@ python -m baas_plus.cli test-email  # 测试邮件通知
 
 > 也支持不安装进 BAAS 环境：在 WebUI 配置 `baas.repo_dir` 指向 BAAS 源码目录，
 > 引擎会自动把它加入 sys.path 并切换工作目录（两种方式等价）。
+> 示例中的 `D:\BAAS` 等路径请替换为你的实际目录。
 
 ### 定时执行（Windows 计划任务）
 
@@ -50,8 +51,8 @@ python -m baas_plus.cli test-email  # 测试邮件通知
 
 ```bat
 @echo off
-cd /d E:\BAA-Script
-E:\BAA-Script\.venv\Scripts\python.exe -m baas_plus.cli run
+cd /d D:\BAAS
+D:\BAAS\.venv\Scripts\python.exe -m baas_plus.cli run
 ```
 
 > ⚠️ `cd /d` 到 BAAS 根目录是必须的（BAAS 用相对路径读 `config/`）；`.bat` 与任务计划程序都建议用 Python 完整路径。
@@ -59,7 +60,7 @@ E:\BAA-Script\.venv\Scripts\python.exe -m baas_plus.cli run
 注册每天 05:00 自动执行：
 
 ```
-schtasks /create /tn "BAAS-Plus-Daily" /tr "E:\BAA-Script\run.bat" /sc daily /st 05:00
+schtasks /create /tn "BAAS-Plus-Daily" /tr "D:\BAAS\run.bat" /sc daily /st 05:00
 ```
 
 **或用图形界面（任务计划程序向导）**：
@@ -67,9 +68,9 @@ schtasks /create /tn "BAAS-Plus-Daily" /tr "E:\BAA-Script\run.bat" /sc daily /st
 1. `Win+R` → `taskschd.msc` → 右侧「创建基本任务…」
 2. 触发器：每天 → 时间（建议体力重置后，如 04:05）
 3. 操作：启动程序 →
-   - 程序/脚本：`E:\BAA-Script\.venv\Scripts\python.exe`
+   - 程序/脚本：`D:\BAAS\.venv\Scripts\python.exe`
    - 添加参数：`-m baas_plus.cli run`
-   - 起始于：`E:\BAA-Script`
+   - 起始于：`D:\BAAS`
 4. 完成后双击任务 → 「条件」取消勾选「只有在计算机使用交流电源时才启动任务」（笔记本必改）；「设置」可设「运行超过 3 小时停止任务」防卡死
 
 ## 🖥 WebUI 配置
@@ -114,6 +115,12 @@ baas_plus/
 - BAAS 的活动关卡属性数据（`src/explore_task_data/activities/*.json`）为社区手动录入，可能与实际不符（如笑笑闹闹 12 关全录成 shock）。BAAS-Plus 推图时实机检测敌人防御类型自动修正；**复合装甲**（对应新属性「分解」）BAAS 预设体系暂无对应，无法自动选队
 - 实际运行需 Windows + 模拟器 + 完整 BAAS 环境；调度器本身可在任意平台开发测试（不 import core 的部分）
 - BAAS 上游 release 包与源码偶尔字段不同步（如 v1.4.3 的 `steam_app_process_name` vs 源码 `PC_app_process_name`），BAAS-Plus 首次调用时会自动对齐 `config/static.json` 与 `config/<server>/config.json` 字段（幂等，保留用户已有配置）
+
+## ⚠️ 免责声明
+
+- 本项目为个人学习/自动化辅助工具，**非官方**，与 NEXON / Yostar 等无关；使用自动化脚本可能违反游戏用户协议，账号风险自负
+- 实机自动化依赖模拟器分辨率与 BAAS 社区维护的截图模板，活动 UI 变化可能导致任务定位失败，请留意执行日志
+- 邮件授权码、SMTP 配置等敏感信息保存在本地 `data/config.json`，请勿将 `data/` 目录提交或分享
 
 ## 📄 许可证
 
