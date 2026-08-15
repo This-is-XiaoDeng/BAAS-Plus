@@ -55,6 +55,9 @@ class FakeBridge:
     def get_baas_sweep_config(self):
         return self.baas_sweep_config
 
+    def get_current_activity(self):
+        return getattr(self, "current_activity_record", None)
+
     def set_current_activity(self, module_name):
         self.current_activity = module_name
 
@@ -704,3 +707,23 @@ def test_sync_sweep_push_back_to_baas(tmp_path):
     data = json.loads(cfg_file.read_text(encoding="utf-8"))
     assert data["mainlinePriority"] == "5-1-3"
     assert data["hardPriority"] == "20-1-1"
+
+
+@pytest.mark.asyncio
+async def test_push_uses_baas_recorded_activity(tmp_path):
+    """无手动配置但 BAAS 记录 current_game_activity 正确 → 推图/扫荡照常执行"""
+    event = GameEvent(
+        id=99, title="中文标题新活动", start_at=int(time.time()) - 10,
+        end_at=int(time.time()) + 86400, event_type=EventType.EVENT,
+    )
+    bridge = FakeBridge(ap=200)
+    bridge.current_activity_record = "SayBing"
+    engine = make_engine(
+        bridge, events=[event], data_dir=str(tmp_path),
+        baas={"current_activity": ""},
+    )
+    result = await engine.run_once()
+    assert bridge.current_activity == "SayBing"
+    assert "explore_activity_story" in bridge.solves
+    assert "activity_sweep" in bridge.solves
+    assert result.status == "success"

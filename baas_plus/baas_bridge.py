@@ -365,6 +365,23 @@ class BaasBridge:
             raise RuntimeError("Baas_thread 未初始化")
         return self.baas_thread.config_set
 
+    def get_current_activity(self) -> str | None:
+        """读取 BAAS 记录的活动模块名（current_game_activity）
+
+        优先运行时 Baas_thread 属性（BAAS 扫荡实际消费的值）；否则纯文件读
+        config.json 中的记录（无需 Baas_thread）。无记录返回 None。
+        """
+        if self.baas_thread is not None:
+            value = getattr(self.baas_thread, "current_game_activity", None)
+            if value:
+                return value
+        data = self._read_baas_config_file()
+        if data is not None:
+            value = data.get("current_game_activity")
+            if isinstance(value, str) and value:
+                return value
+        return None
+
     def set_current_activity(self, module_name: str) -> None:
         """设置 BAAS 当前活动模块（current_game_activity）
 

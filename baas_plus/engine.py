@@ -94,7 +94,8 @@ class Engine:
     def resolve_activity_module(self, event: GameEvent) -> str | None:
         """将活动事件映射到 BAAS 活动模块名（module/activities/<name>.py）
 
-        优先级：手动配置 current_activity > 事件标题精确匹配（未来可扩展模糊匹配/映射表）
+        优先级：手动配置 current_activity > BAAS 记录的 current_game_activity
+        （BAAS 记录可能是 BAAS 自己检测或之前运行写入的，同样可信）。
         """
         if self.config.baas.current_activity:
             manual = self.config.baas.current_activity
@@ -105,6 +106,10 @@ class Engine:
                 manual,
             )
             return None
+        recorded = self.bridge.get_current_activity()
+        if recorded and self.bridge.activity_module_available(recorded):
+            logger.info("使用 BAAS 记录的活动模块: %s", recorded)
+            return recorded
         return None
 
     def push_new_activity(self, event: GameEvent) -> list[str]:
@@ -141,7 +146,8 @@ class Engine:
     async def _select_sweep_activity(self) -> tuple[str, str | None] | None:
         """选择要扫荡的活动；返回 (模块名, 活动标题)，标题用于轮播图 OCR 关键词
 
-        优先级：手动配置 current_activity > GameKee 进行中的活动启发式匹配
+        优先级：手动配置 current_activity > BAAS 记录的 current_game_activity
+        > GameKee 进行中的活动启发式匹配
         （标题英文关键词 ↔ BAAS 模块名）。全部失败返回 None（跳过活动扫荡，
         避免扫到已结束/仅兑换可用的旧活动模块）。
         """
@@ -155,6 +161,10 @@ class Engine:
                 manual,
             )
             return None
+        recorded = self.bridge.get_current_activity()
+        if recorded and self.bridge.activity_module_available(recorded):
+            logger.info("活动扫荡选中模块（BAAS 记录）: %s", recorded)
+            return recorded, None
         modules = self.bridge.list_activity_modules()
         if not modules:
             logger.warning("无法扫描 BAAS 活动模块列表")
