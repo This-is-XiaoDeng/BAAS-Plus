@@ -32,6 +32,15 @@ BAAS_IMPORT_ERROR = (
 )
 
 
+MISSION_ARMOR_MAP = {
+    # 敌人防御类型（白名单）→ 克制属性（对应 BAAS preset_team_attribute 键）
+    "轻装甲": "burst",
+    "重装甲": "mystic",
+    "特殊装甲": "pierce",
+    "弹性装甲": "shock",
+}
+
+
 def import_baas(repo_dir: str = "") -> Any:
     """惰性导入 BAAS 模块
 
@@ -691,6 +700,88 @@ class BaasBridge:
         self.baas_thread.to_main_page()
         logger.info("BAAS-Plus 已回到主界面")
 
+    def _ocr_region(
+        self, region: tuple[int, int, int, int], enlarge: int = 2
+    ) -> str:
+        """OCR 指定区域（720p 基准坐标）；复用轮播图 OCR 预处理（刷新截图+放大+CLAHE）"""
+        if self.baas_thread is None or self.baas_thread.ocr is None:
+            return ""
+        try:
+            update = getattr(self.baas_thread, "update_screenshot_array", None)
+            if callable(update):
+                update()
+            img = getattr(self.baas_thread, "latest_img_array", None)
+            if img is None:
+                return ""
+            ratio = getattr(self.baas_thread, "ratio", 1.0) or 1.0
+            x1, y1, x2, y2 = region
+            crop = img[
+                int(y1 * ratio) : int(y2 * ratio),
+                int(x1 * ratio) : int(x2 * ratio),
+            ]
+            if crop.size == 0:
+                return ""
+            import cv2
+
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+            gray = cv2.resize(
+                gray,
+                (gray.shape[1] * enlarge, gray.shape[0] * enlarge),
+                interpolation=cv2.INTER_CUBIC,
+            )
+            gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+            text = self.baas_thread.ocr.ocr_for_single_line(
+                language="zh-cn",
+                log_info="region",
+                origin_image=gray,
+                pass_method=1,
+                shared_memory_name="",
+                _logger=getattr(self.baas_thread, "logger", None),
+            )
+            return (text or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("OCR 区域失败 %s: %s", region, exc)
+            return ""
+
+    def detect_mission_attribute(self) -> str | None:
+        """在任务详情页点击「敌人/克制」，OCR 第一个敌人的防御类型 → 返回克制属性
+
+        坐标（1280x720 基准，BAAS 自动按分辨率缩放）：
+        - 敌人/克制按钮: (213, 274)
+        - 第一个敌人防御类型文字区域: (346, 387)-(402, 411)
+        - 弹窗关闭按钮: (1065, 105)
+
+        防御类型白名单（子串匹配）：轻装甲→爆发 / 重装甲→神秘 / 特殊装甲→贯穿 /
+        弹性装甲→震动。识别失败（弹窗未出/OCR 乱码）返回 None，由调用方回退 BAAS
+        原 JSON 数据，不阻塞流程。
+        """
+        if self.baas_thread is None:
+            return None
+        baas = self.baas_thread
+        text = ""
+        try:
+            baas.click(213, 274)
+            for _ in range(6):  # 最多 ~5s 等弹窗加载 + OCR
+                time.sleep(0.8)
+                text = self._ocr_region((346, 387, 402, 411))
+                for armor, attr in MISSION_ARMOR_MAP.items():
+                    if armor in text:
+                        logger.info(
+                            "任务敌人防御类型「%s」→ 使用 %s 队", armor, attr
+                        )
+                        time.sleep(0.3)
+                        baas.click(1065, 105)  # 关闭弹窗
+                        time.sleep(0.6)  # 等关闭动画结束，避免残留遮挡
+                        return attr
+            logger.warning("任务敌人属性识别失败（OCR 文本: %r）", text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("任务敌人属性检测异常: %s", exc)
+        try:  # 保底关闭弹窗，避免残留遮挡后续流程
+            baas.click(1065, 105)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
     def solve_activity_sweep_after_enter(self) -> Any:
         """已在目标活动菜单内时执行 activity_sweep：临时屏蔽 to_main_page
 
@@ -718,17 +809,43 @@ class BaasBridge:
         推图（打通任务至全 SSS）与扫荡共用 to_mission_task_info 定位，BAAS 的
         explore_activity_mission() 开头同样强制 to_main_page()，这里同样屏蔽，
         让 BAAS 从活动菜单直接开始推图（已 SSS 的关卡会快速跳过）。
+
+        同时 patch start_mission：BAAS 的关卡属性数据（explore_task_data JSON）
+        为开发者手动录入，可能与实际关卡不符（如笑笑闹闹 JSON 全写 shock，
+        实际关卡是爆发）。每次 start_mission 前点击「敌人/克制」实机 OCR 第一个
+        敌人的防御类型，用真实属性覆盖后再进编队，避免选错队伍。
         """
         if self.baas_thread is None:
             raise RuntimeError("Baas_thread 未初始化")
         baas = self.baas_thread
-        orig = baas.to_main_page
+        orig_main = baas.to_main_page
+        orig_start = None
+        patched_module = None
         try:
             baas.to_main_page = lambda: None  # type: ignore[method-assign]
-            logger.info("已屏蔽 to_main_page，执行 BAAS explore_activity_mission（活动内推图）")
+            import module.activities.activity_utils as au
+
+            patched_module = au
+            orig_start = au.start_mission
+
+            def patched_start_mission(instance, attribute_str: str):
+                real = self.detect_mission_attribute()
+                if real:
+                    logger.info(
+                        "start_mission 属性修正: %s -> %s", attribute_str, real
+                    )
+                    attribute_str = real
+                return orig_start(instance, attribute_str)
+
+            au.start_mission = patched_start_mission
+            logger.info(
+                "已屏蔽 to_main_page + 已安装敌人属性检测，执行 BAAS explore_activity_mission（活动内推图）"
+            )
             return self.solve("explore_activity_mission")
         finally:
-            baas.to_main_page = orig
+            baas.to_main_page = orig_main
+            if orig_start is not None and patched_module is not None:
+                patched_module.start_mission = orig_start
 
     def sync_sweep_from_baas(self) -> dict[str, Any]:
         """从 BAAS 配置读取扫荡列表并同步到 BAAS-Plus 配置（普通/困难图为空时填充）
