@@ -22,7 +22,7 @@ from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any
 
 from .activity import ACTIVITY_MODULE_ALIASES, ActivityFetcher, EventType, GameEvent
-from .baas_bridge import BaasBridge, compute_sweep_times
+from .baas_bridge import BaasBridge, SWEEP_ITEM_RE, compute_sweep_times
 from .config import AppConfig, SWEEP_TASKS
 from .notifier import EmailNotifier
 from .store import Store
@@ -298,10 +298,11 @@ class Engine:
         max_per_task = HARD_MAX_TIMES if not is_normal else self.config.sweep.max_times
         result: list[str] = []
         for item in tasks:
-            parts = item.split("-")
-            if len(parts) != 3:
+            if not SWEEP_ITEM_RE.fullmatch(item):
+                # 历史嵌套转义污染项（如 ['3-3-3'）直接拒绝，避免再次写回 BAAS 配置
                 logger.warning("扫荡配置格式错误（应为 region-mission-counts）: %s", item)
                 continue
+            parts = item.split("-")
             region, mission, counts = parts
             if self.config.sweep.strategy == "auto":
                 times = compute_sweep_times(ap, base_cost, max_per_task)
@@ -382,11 +383,11 @@ class Engine:
         normal_tasks = self.config.sweep.normal_tasks
         hard_tasks = self.config.sweep.hard_tasks
         if not normal_tasks and not hard_tasks:
-            # 回退读取 BAAS 配置里的扫荡列表（逗号分隔的 "区域-关卡-次数"）
+            # 回退读取 BAAS 配置里的扫荡列表（bridge 已解析为干净的 region-mission-counts 列表）
             try:
                 baas_cfg = self.bridge.get_baas_sweep_config()
-                normal_tasks = [s.strip() for s in baas_cfg["mainlinePriority"].split(",") if s.strip()]
-                hard_tasks = [s.strip() for s in baas_cfg["hardPriority"].split(",") if s.strip()]
+                normal_tasks = baas_cfg["mainlinePriority"]
+                hard_tasks = baas_cfg["hardPriority"]
                 logger.info("扫荡列表取自 BAAS 配置: normal=%s hard=%s", normal_tasks, hard_tasks)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("读取 BAAS 扫荡配置失败: %s", exc)

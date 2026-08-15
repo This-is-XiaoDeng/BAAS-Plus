@@ -25,7 +25,7 @@ class FakeBridge:
         self.hard_tasks = None
         self.activity_sweep = None
         self._next_time = 0
-        self.baas_sweep_config = {"mainlinePriority": "", "hardPriority": ""}
+        self.baas_sweep_config = {"mainlinePriority": [], "hardPriority": []}
         self.banner_text = ""
         self.banner_module: str | None = None
 
@@ -618,7 +618,10 @@ async def test_arena_interleaves_with_regular_tasks(tmp_path, monkeypatch):
 async def test_sweep_fallback_to_baas_config(tmp_path):
     """BAAS-Plus 扫荡列表为空时，回退读取 BAAS 配置里的 mainlinePriority/hardPriority"""
     bridge = FakeBridge(ap=120)
-    bridge.baas_sweep_config = {"mainlinePriority": "5-1-3,6-1-2", "hardPriority": "20-1-1"}
+    bridge.baas_sweep_config = {
+        "mainlinePriority": ["5-1-3", "6-1-2"],
+        "hardPriority": ["20-1-1"],
+    }
     engine = make_engine(
         bridge,
         events=[],
@@ -631,3 +634,21 @@ async def test_sweep_fallback_to_baas_config(tmp_path):
     assert bridge.normal_tasks == ["5-1-12", "6-1-12"]
     assert bridge.hard_tasks == ["20-1-3"]  # 困难图按体力重算，封顶 3 次
     assert result.status == "success"
+
+
+def test_parse_sweep_list_pollution():
+    """历史嵌套转义污染能被 _parse_sweep_list 清理为干净项"""
+    from baas_plus.baas_bridge import _parse_sweep_list
+
+    # 正常 str
+    assert _parse_sweep_list("3-3-3,9-3-3") == ["3-3-3", "9-3-3"]
+    # list（旧版误写入 JSON 数组）
+    assert _parse_sweep_list(["3-3-3", "9-3-3"]) == ["3-3-3", "9-3-3"]
+    # 一层污染：str(list) 后 split 的垃圾元素
+    assert _parse_sweep_list("['3-3-3', '9-3-3']") == ["3-3-3", "9-3-3"]
+    # 深层嵌套转义（主人实机截图形态）
+    deep = "['[\\\\'[\\\\\\\\\\\\'[\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\'3-3-3"
+    assert _parse_sweep_list(deep) == ["3-3-3"]
+    # 空/垃圾
+    assert _parse_sweep_list("") == []
+    assert _parse_sweep_list("garbage") == []

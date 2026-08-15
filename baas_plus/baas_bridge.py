@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,23 @@ from typing import TYPE_CHECKING, Any
 from .config import AppConfig, SweepConfig
 
 logger = logging.getLogger(__name__)
+
+# BAAS 扫荡列表项格式：region-mission-counts（counts 可为 max 或数字）
+SWEEP_ITEM_RE = re.compile(r"\d+-\d+-(?:max|\d+)")
+
+
+def _parse_sweep_list(value: object) -> list[str]:
+    """解析 BAAS 扫荡列表（mainlinePriority/hardPriority）
+
+    兼容三种形态：
+    1. 正常 str："3-3-3,9-3-3"
+    2. list（BAAS-Plus 旧版误写入 JSON 数组）
+    3. 历史嵌套转义污染（"['[\\'[\\\\\\'...3-3-3"，多次 str(list)+split 累积）
+
+    统一用正则提取所有 region-mission-counts 干净项，天然过滤引号/括号垃圾。
+    """
+    text = value if isinstance(value, str) else str(value)
+    return SWEEP_ITEM_RE.findall(text)
 
 if TYPE_CHECKING:
     from core.Baas_thread import Baas_thread
@@ -284,14 +302,17 @@ class BaasBridge:
 
     # ---- 配置读取 ----
 
-    def get_baas_sweep_config(self) -> dict[str, str]:
-        """读取 BAAS 配置中的扫荡列表（mainlinePriority / hardPriority，格式 "区域-关卡-次数"）"""
+    def get_baas_sweep_config(self) -> dict[str, list[str]]:
+        """读取 BAAS 配置中的扫荡列表（mainlinePriority / hardPriority）
+
+        返回 region-mission-counts 干净列表（自动过滤历史嵌套转义污染）。
+        """
         if self.baas_thread is None:
             raise RuntimeError("Baas_thread 未初始化")
         config_set = self.baas_thread.config_set
         return {
-            "mainlinePriority": str(config_set.get("mainlinePriority", "") or ""),
-            "hardPriority": str(config_set.get("hardPriority", "") or ""),
+            "mainlinePriority": _parse_sweep_list(config_set.get("mainlinePriority", "")),
+            "hardPriority": _parse_sweep_list(config_set.get("hardPriority", "")),
         }
 
     # ---- 配置改写 ----
@@ -504,11 +525,14 @@ class BaasBridge:
     def set_sweep_tasks(self, normal_tasks: list[str], hard_tasks: list[str]) -> None:
         """设置普通/困难图扫荡列表（mainlinePriority / hardPriority，格式 region-mission-counts）
 
-        设置后重新解析 unfinished 任务列表（BAAS 扫荡任务实际消费的数据）
+        BAAS 这两个字段是 **str 类型**（逗号分隔），必须 join 成字符串写入；
+        直接写 list 会把 config.json 变成 JSON 数组，下次 str(list)+split 读取
+        产生嵌套引号污染（每次运行加深一层）。设置后重新解析 unfinished 任务
+        列表（BAAS 扫荡任务实际消费的数据）。
         """
         config_set = self._config_set()
-        config_set.set("mainlinePriority", normal_tasks)
-        config_set.set("hardPriority", hard_tasks)
+        config_set.set("mainlinePriority", ",".join(normal_tasks))
+        config_set.set("hardPriority", ",".join(hard_tasks))
         baas = self.baas_thread
         if baas is not None:
             refresh = getattr(baas, "refresh_common_tasks", None)
@@ -866,8 +890,8 @@ class BaasBridge:
             return {"ok": False, "reason": "baas.repo_dir 为空，无法读取 BAAS 配置"}
         self.check_baas()  # 初始化 ConfigSet/Baas_thread（含配置自愈）
         baas_cfg = self.get_baas_sweep_config()
-        normal = [s.strip() for s in str(baas_cfg.get("mainlinePriority", "")).split(",") if s.strip()]
-        hard = [s.strip() for s in str(baas_cfg.get("hardPriority", "")).split(",") if s.strip()]
+        normal = baas_cfg["mainlinePriority"]
+        hard = baas_cfg["hardPriority"]
         changed = False
         if not self.config.sweep.normal_tasks and normal:
             self.config.sweep.normal_tasks = normal
