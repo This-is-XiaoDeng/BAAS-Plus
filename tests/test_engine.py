@@ -95,6 +95,10 @@ class FakeBridge:
             return self.banner_module if self.banner_module in candidates else None
         return candidates[0]
 
+    def click_banner_enter(self):
+        self.solves.append("click_banner_enter")
+        return True
+
     def stop(self):
         pass
 

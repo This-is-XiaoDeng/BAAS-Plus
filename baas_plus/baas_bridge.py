@@ -636,6 +636,19 @@ class BaasBridge:
         logger.warning("等待公告弹窗关闭超时（%.0fs），仍有弹窗可能残留", timeout)
         return False
 
+    def click_banner_enter(self) -> None:
+        """立即点击轮播图当前页的「进入活动」按钮（activity_enter1 @ (1196,195)）
+
+        模板匹配已确认轮播图当前页 = 目标活动时直接点击，跳过 BAAS
+        to_activity() 内部 co_detect 的轮询延迟（每轮 sleep 1.5s，轮播图可能
+        在此期间轮走，导致点击落在错误活动上）。坐标与 BAAS picture.activity_enter1
+        一致（1280x720 基准，baas.click 内部会做分辨率缩放）。
+        """
+        if self.baas_thread is None:
+            raise RuntimeError("Baas_thread 未初始化")
+        self.baas_thread.click(1196, 195)
+        logger.info("BAAS-Plus 立即点击 activity_enter1 (1196,195)（跳过 BAAS 特征轮询）")
+
     def sync_sweep_from_baas(self) -> dict[str, Any]:
         """从 BAAS 配置读取扫荡列表并同步到 BAAS-Plus 配置（普通/困难图为空时填充）
 

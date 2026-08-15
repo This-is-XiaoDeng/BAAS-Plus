@@ -343,6 +343,12 @@ class Engine:
                 if not await self._wait_for_activity_banner(keywords, module=module):
                     logger.warning("轮播图未就绪，跳过活动扫荡「%s」", title)
                 else:
+                    # 模板匹配已确认当前页=目标活动：立即点击 enter1，跳过 BAAS
+                    # to_activity 内部 co_detect 的 1.5s 轮询延迟（轮播图可能在
+                    # 这 3s 内轮走，点进错误活动）；sleep 1s 等页面开始切换，
+                    # 避免 BAAS solve 再次点到 enter1 造成双击
+                    self.bridge.click_banner_enter()
+                    await asyncio.sleep(1.0)
                     self.bridge.solve("activity_sweep")
                     swept.append(
                         f"activity:{self.config.sweep.activity_task_number}(auto,{module})"
