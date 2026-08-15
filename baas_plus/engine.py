@@ -340,20 +340,36 @@ class Engine:
                 # 轮播图导航：BAAS 点 enter 进入的是轮播图当前页的活动，
                 # 先等自动换页到目标活动（模板匹配优先，OCR 兜底）再让 BAAS 进入
                 keywords = self._banner_keywords(title) if title else []
-                if not await self._wait_for_activity_banner(keywords, module=module):
-                    logger.warning("轮播图未就绪，跳过活动扫荡「%s」", title)
-                else:
-                    # 模板匹配已确认当前页=目标活动：立即点击 enter1 进入活动菜单；
-                    # 随后屏蔽 BAAS activity_sweep 开头的 to_main_page()（它会点
-                    # quick-home 退回主页导致前功尽弃，再点 enter1 时轮播图已轮走），
-                    # 让 BAAS 从活动菜单直接继续扫荡。
+
+                async def _enter_and_run(task: str) -> bool:
+                    """等轮播图 → 点击 enter1 进入活动菜单 → 屏蔽 to_main_page 执行任务"""
+                    if not await self._wait_for_activity_banner(keywords, module=module):
+                        logger.warning("轮播图未就绪，跳过「%s」", task)
+                        return False
                     if self.bridge.enter_current_activity():
-                        self.bridge.solve_activity_sweep_after_enter()
-                    else:
-                        logger.warning(
-                            "未能确认进入活动菜单，回退 BAAS 原生 activity_sweep（可能进错活动）"
-                        )
-                        self.bridge.solve("activity_sweep")
+                        if task == "explore_activity_mission":
+                            self.bridge.solve_activity_explore_mission()
+                        else:
+                            self.bridge.solve_activity_sweep_after_enter()
+                        return True
+                    logger.warning("未能确认进入活动菜单，回退 BAAS 原生 %s（可能进错活动）", task)
+                    self.bridge.solve(task)
+                    return True
+
+                pushed_ok = True
+                if self.config.activity.push_before_sweep:
+                    # 先推图（打通任务至全 SSS；已 SSS 的关卡快速跳过）：
+                    # BAAS 定位任务靠按钮模板匹配，未解锁任务的按钮样式不匹配，
+                    # 不推图直接扫荡会定位失败（swipe_search_target_str 返回 None）
+                    logger.info("活动扫荡前先推图: %s", title)
+                    pushed_ok = await _enter_and_run("explore_activity_mission")
+                    if pushed_ok:
+                        # 推图后页面停在活动内，回主页重新等轮播图再进扫荡
+                        self.bridge.go_main_page()
+
+                if not await _enter_and_run("activity_sweep"):
+                    logger.warning("活动扫荡未执行「%s」", title)
+                else:
                     swept.append(
                         f"activity:{self.config.sweep.activity_task_number}(auto,{module})"
                     )

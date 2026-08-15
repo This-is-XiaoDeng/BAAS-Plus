@@ -107,6 +107,17 @@ class FakeBridge:
         self.solves.append("activity_sweep")
         return True
 
+    def solve_activity_explore_mission(self):
+        self.solves.append("explore_activity_mission")
+        return True
+
+    def go_main_page(self):
+        self.solves.append("go_main_page")
+        return True
+
+    def close_announcement_popups(self, timeout=30.0):
+        return True
+
     def stop(self):
         pass
 
@@ -421,7 +432,7 @@ async def test_sweep_waits_for_banner_rotation(tmp_path):
         "海文迪 铁道失控事件",  # 第 1 次 OCR：火车活动页
         "海文迪 铁道失控事件",  # 第 2 次 OCR：还是火车活动页
         "笑笑闹闹 走走绕绕",   # 第 3 次 OCR：换页到目标
-    ]
+    ] * 2  # 推图阶段消耗一轮，扫荡阶段再消耗一轮
     engine = make_engine(
         bridge,
         events=[running],

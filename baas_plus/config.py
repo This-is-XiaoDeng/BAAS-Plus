@@ -126,6 +126,10 @@ class ActivityConfig(BaseModel):
     push_story_on_new: bool = True
     push_mission_on_new: bool = False
     push_challenge_on_new: bool = False
+    # 活动扫荡前是否先推图（explore_activity_mission 全推至 SSS）：
+    # BAAS 定位任务依赖按钮模板匹配，未解锁（未推）任务的按钮样式不匹配，
+    # 直接扫荡会定位失败；已全 SSS 时推图会快速跳过，开销很小
+    push_before_sweep: bool = True
 
 
 class SweepConfig(BaseModel):

@@ -684,6 +684,13 @@ class BaasBridge:
         logger.warning("点击 enter1 后 %.0fs 内未检测到 activity_menu，可能未进入活动", timeout)
         return False
 
+    def go_main_page(self) -> None:
+        """真实执行 BAAS to_main_page()（处理弹窗/回主页），供推图后复位使用"""
+        if self.baas_thread is None:
+            raise RuntimeError("Baas_thread 未初始化")
+        self.baas_thread.to_main_page()
+        logger.info("BAAS-Plus 已回到主界面")
+
     def solve_activity_sweep_after_enter(self) -> Any:
         """已在目标活动菜单内时执行 activity_sweep：临时屏蔽 to_main_page
 
@@ -702,6 +709,24 @@ class BaasBridge:
             baas.to_main_page = lambda: None  # type: ignore[method-assign]
             logger.info("已屏蔽 to_main_page，执行 BAAS activity_sweep（活动菜单内）")
             return self.solve("activity_sweep")
+        finally:
+            baas.to_main_page = orig
+
+    def solve_activity_explore_mission(self) -> Any:
+        """已在目标活动菜单内时执行活动推图 explore_activity_mission
+
+        推图（打通任务至全 SSS）与扫荡共用 to_mission_task_info 定位，BAAS 的
+        explore_activity_mission() 开头同样强制 to_main_page()，这里同样屏蔽，
+        让 BAAS 从活动菜单直接开始推图（已 SSS 的关卡会快速跳过）。
+        """
+        if self.baas_thread is None:
+            raise RuntimeError("Baas_thread 未初始化")
+        baas = self.baas_thread
+        orig = baas.to_main_page
+        try:
+            baas.to_main_page = lambda: None  # type: ignore[method-assign]
+            logger.info("已屏蔽 to_main_page，执行 BAAS explore_activity_mission（活动内推图）")
+            return self.solve("explore_activity_mission")
         finally:
             baas.to_main_page = orig
 
