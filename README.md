@@ -112,7 +112,7 @@ baas_plus/
 ## ⚠️ 已知限制
 
 - 活动推图依赖 BAAS 社区维护的活动模块（`module/activities/`，每个活动一个插件）。GameKee 活动标题为中文，无法自动对应模块名，新活动需在配置中指定 `baas.current_activity`；未指定时记录活动并跳过推图
-- BAAS 的活动关卡属性数据（`src/explore_task_data/activities/*.json`）为社区手动录入，可能与实际不符（如笑笑闹闹 12 关全录成 shock）。BAAS-Plus 推图时实机检测敌人防御类型自动修正；**复合装甲**（对应新属性「分解」）BAAS 预设体系暂无对应，无法自动选队
+- BAAS 的活动关卡属性数据（`src/explore_task_data/activities/*.json`）为社区手动录入，可能存在错误（如笑笑闹闹 12 关全录成 shock）——**无需担心**：BAAS-Plus 推图进关前会实机 OCR 敌人防御类型并自动修正（命中白名单即覆盖原数据，识别失败才回退）。仅 **复合装甲**（对应新属性「分解」）BAAS 预设体系暂无对应属性，无法自动选克制队
 - 实际运行需 Windows + 模拟器 + 完整 BAAS 环境；调度器本身可在任意平台开发测试（不 import core 的部分）
 - BAAS 上游 release 包与源码偶尔字段不同步（如 v1.4.3 的 `steam_app_process_name` vs 源码 `PC_app_process_name`），BAAS-Plus 首次调用时会自动对齐 `config/static.json` 与 `config/<server>/config.json` 字段（幂等，保留用户已有配置）
 
