@@ -544,10 +544,10 @@ async def test_collect_reward_after_all_tasks(tmp_path):
     )
     await engine.run_once()
     idx = {t: i for i, t in enumerate(bridge.solves)}
-    # collect_reward 在 cafe_reward / lesson 之后，且在扫荡之前（任务阶段最后一个）
+    # collect_reward 在 cafe_reward / lesson 之后，且在扫荡之后（所有任务最后）
     assert idx["collect_reward"] > idx["cafe_reward"]
     assert idx["collect_reward"] > idx["lesson"]
-    assert idx["collect_reward"] < idx["activity_sweep"]
+    assert idx["collect_reward"] > idx["activity_sweep"]
 
 
 async def _instant_sleep(delay):

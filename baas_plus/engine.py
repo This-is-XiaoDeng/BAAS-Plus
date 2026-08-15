@@ -29,7 +29,7 @@ from .store import Store
 
 logger = logging.getLogger(__name__)
 
-# 领取类任务：在所有任务（含 arena）执行完成后执行
+# 领取类任务：在所有任务（含 arena、扫荡）执行完成后执行
 AFTER_ALL_TASKS = ("collect_reward",)
 
 if TYPE_CHECKING:
@@ -483,8 +483,7 @@ class Engine:
                 self.result.status = "partial"
 
             # 4. 勾选任务（扫荡类任务由扫荡阶段统一调度）；arena 与常规任务穿插：
-            #    arena 冷却等待（asyncio.sleep）期间让出事件循环，常规任务继续跑；
-            #    领取类任务（collect_reward）在全部任务（含 arena）之后执行
+            #    arena 冷却等待（asyncio.sleep）期间让出事件循环，常规任务继续跑
             sweepless = [t for t in self.config.baas.tasks if t not in SWEEP_TASKS]
             regular = [t for t in sweepless if t != "arena" and t not in AFTER_ALL_TASKS]
             after = [t for t in sweepless if t in AFTER_ALL_TASKS]
@@ -492,10 +491,13 @@ class Engine:
                 await asyncio.gather(self._run_regular_tasks(regular), self._run_arena())
             else:
                 await self._run_regular_tasks(regular)
-            await self._run_regular_tasks(after)
 
             # 5. 扫荡
             self.result.swept = await self.run_sweep()
+
+            # 6. 领取类任务（collect_reward）在所有任务（含 arena、扫荡）之后执行，
+            #    确保扫荡推进的奖励进度（活动任务目标/每日任务计数等）也能被领取
+            await self._run_regular_tasks(after)
 
             self.result.summary = self._build_summary()
             self.store.finish_record(record_id, self.result.status, self.result.summary, self._record_detail())
