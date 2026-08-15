@@ -33,11 +33,15 @@ BAAS_IMPORT_ERROR = (
 
 
 MISSION_ARMOR_MAP = {
-    # 敌人防御类型（白名单）→ 克制属性（对应 BAAS preset_team_attribute 键）
+    # 敌人防御类型（白名单，子串匹配）→ 克制属性（对应 BAAS preset_team_attribute 键）
+    # 游戏内共 6 种装甲：一般(无弱点)/轻/重/复合/特殊/弹力。
+    # 一般装甲任意属性都 100%，不覆盖（回退 BAAS 原 JSON）；复合装甲对应新属性
+    # 「分解」，BAAS 预设体系（burst/pierce/mystic/shock）暂无对应，同样不覆盖。
     "轻装甲": "burst",
     "重装甲": "mystic",
     "特殊装甲": "pierce",
-    "弹性装甲": "shock",
+    "弹力装甲": "shock",
+    "弹性装甲": "shock",  # 兼容 OCR 变体
 }
 
 
@@ -751,9 +755,10 @@ class BaasBridge:
         - 第一个敌人防御类型文字区域: (346, 387)-(402, 411)
         - 弹窗关闭按钮: (1065, 105)
 
-        防御类型白名单（子串匹配）：轻装甲→爆发 / 重装甲→神秘 / 特殊装甲→贯穿 /
-        弹性装甲→震动。识别失败（弹窗未出/OCR 乱码）返回 None，由调用方回退 BAAS
-        原 JSON 数据，不阻塞流程。
+        防御类型白名单（子串匹配，游戏内共 6 种装甲）：轻装甲→爆发 / 重装甲→神秘 /
+        特殊装甲→贯穿 / 弹力装甲→震动；一般装甲无弱点（任意属性 100%）、复合装甲
+        对应 BAAS 暂不支持的「分解」属性，二者识别到后不覆盖（返回 None，用 BAAS
+        原 JSON 数据）。识别失败同样返回 None，不阻塞流程。
         """
         if self.baas_thread is None:
             return None
