@@ -485,6 +485,15 @@ class Engine:
             # 4. 勾选任务（扫荡类任务由扫荡阶段统一调度）；arena 与常规任务穿插：
             #    arena 冷却等待（asyncio.sleep）期间让出事件循环，常规任务继续跑
             sweepless = [t for t in self.config.baas.tasks if t not in SWEEP_TASKS]
+            # 活动推图已由「活动策略」配置统一调度（新活动自动推图），任务列表入口已
+            # 移除；旧配置残留 explore_activity_* 时跳过并提示，避免重复推图
+            deprecated_act = [t for t in sweepless if t.startswith("explore_activity")]
+            if deprecated_act:
+                logger.warning(
+                    "任务列表中的活动推图项已移除（%s），活动推图请在「活动策略」中配置",
+                    ",".join(deprecated_act),
+                )
+            sweepless = [t for t in sweepless if not t.startswith("explore_activity")]
             regular = [t for t in sweepless if t != "arena" and t not in AFTER_ALL_TASKS]
             after = [t for t in sweepless if t in AFTER_ALL_TASKS]
             if "arena" in sweepless:

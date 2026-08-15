@@ -31,7 +31,7 @@ BAAS_TASKS: list[str] = [
     "arena",  # 竞技场
     "joint_firing_drill",  # 联合作战
     "rewarded_task",  # 悬赏通缉
-    "clear_special_task_power",  # 特别依赖
+    "clear_special_task_power",  # 特别委托
     "create",  # 制造
     "dailyGameActivity",  # 每日活动
     "explore_normal_task",  # 推图-普通
@@ -39,10 +39,7 @@ BAAS_TASKS: list[str] = [
     "normal_task",  # 扫荡-普通
     "hard_task",  # 扫荡-困难
     "activity_sweep",  # 扫荡-活动
-    "explore_activity_story",  # 活动推图-剧情
-    "explore_activity_challenge",  # 活动推图-挑战
-    "explore_activity_mission",  # 活动推图-任务
-    "de_clothes",  # 脱衣服
+    "de_clothes",  # 反和谐
     "total_assault",  # 总力战（BAAS master 已禁用）
 ]
 
@@ -62,7 +59,7 @@ TASK_LABELS: dict[str, str] = {
     "arena": "竞技场（自动重复至票用完）",
     "joint_firing_drill": "联合作战",
     "rewarded_task": "悬赏通缉",
-    "clear_special_task_power": "特别依赖",
+    "clear_special_task_power": "特别委托",
     "create": "制造",
     "dailyGameActivity": "每日活动",
     "explore_normal_task": "推图-普通",
@@ -70,10 +67,7 @@ TASK_LABELS: dict[str, str] = {
     "normal_task": "扫荡-普通",
     "hard_task": "扫荡-困难",
     "activity_sweep": "扫荡-活动",
-    "explore_activity_story": "活动推图-剧情",
-    "explore_activity_challenge": "活动推图-挑战",
-    "explore_activity_mission": "活动推图-任务",
-    "de_clothes": "脱衣服",
+    "de_clothes": "反和谐",
     "total_assault": "总力战（已禁用）",
 }
 
