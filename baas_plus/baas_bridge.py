@@ -649,6 +649,61 @@ class BaasBridge:
         self.baas_thread.click(1196, 195)
         logger.info("BAAS-Plus 立即点击 activity_enter1 (1196,195)（跳过 BAAS 特征轮询）")
 
+    def enter_current_activity(self, timeout: float = 8.0) -> bool:
+        """点击 enter1 进入当前轮播图页的活动，并等待 activity_menu 出现
+
+        模板匹配已确认轮播图当前页 = 目标活动时调用（enter1 按钮位置固定，
+        直接点击比 BAAS co_detect 轮询快，避免轮播图轮走）。返回 True 表示
+        已进入活动菜单（activity_menu 特征出现）。
+        """
+        if self.baas_thread is None:
+            raise RuntimeError("Baas_thread 未初始化")
+        baas = self.baas_thread
+        self.click_banner_enter()
+        try:
+            import_baas(self.config.baas.repo_dir)
+            from core import image
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("加载 BAAS 图像模块失败，无法确认进入活动菜单: %s", exc)
+            return True
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                baas.update_screenshot_array()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("刷新截图失败，终止活动菜单检测: %s", exc)
+                break
+            try:
+                if image.compare_image(baas, "activity_menu"):
+                    logger.info("已进入活动菜单 activity_menu")
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.5)
+        logger.warning("点击 enter1 后 %.0fs 内未检测到 activity_menu，可能未进入活动", timeout)
+        return False
+
+    def solve_activity_sweep_after_enter(self) -> Any:
+        """已在目标活动菜单内时执行 activity_sweep：临时屏蔽 to_main_page
+
+        BAAS 的 activity_sweep() 开头强制调用 self.to_main_page()（内部点
+        main_page_quick-home @ (1236,31) 退回主页），会把已进入的活动页退出，
+        随后 to_activity 再点 enter1 时轮播图已轮走（可能进错活动）。
+        这里临时把实例的 to_main_page 替换为 no-op，让 BAAS 从活动菜单直接
+        继续：to_activity 的 co_detect 先查 end 特征 activity_menu（已出现）
+        → 立即通过，后续选任务/AP 计算/扫荡/弹窗处理全部复用 BAAS 原生逻辑。
+        """
+        if self.baas_thread is None:
+            raise RuntimeError("Baas_thread 未初始化")
+        baas = self.baas_thread
+        orig = baas.to_main_page
+        try:
+            baas.to_main_page = lambda: None  # type: ignore[method-assign]
+            logger.info("已屏蔽 to_main_page，执行 BAAS activity_sweep（活动菜单内）")
+            return self.solve("activity_sweep")
+        finally:
+            baas.to_main_page = orig
+
     def sync_sweep_from_baas(self) -> dict[str, Any]:
         """从 BAAS 配置读取扫荡列表并同步到 BAAS-Plus 配置（普通/困难图为空时填充）
 

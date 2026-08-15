@@ -99,6 +99,14 @@ class FakeBridge:
         self.solves.append("click_banner_enter")
         return True
 
+    def enter_current_activity(self, timeout=8.0):
+        self.solves.append("enter_current_activity")
+        return getattr(self, "enter_ok", True)
+
+    def solve_activity_sweep_after_enter(self):
+        self.solves.append("activity_sweep")
+        return True
+
     def stop(self):
         pass
 
