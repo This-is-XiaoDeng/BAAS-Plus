@@ -58,6 +58,9 @@ class FakeBridge:
     def get_current_activity(self):
         return getattr(self, "current_activity_record", None)
 
+    def check_baas_update(self):
+        return None
+
     def set_current_activity(self, module_name):
         self.current_activity = module_name
 
@@ -727,3 +730,49 @@ async def test_push_uses_baas_recorded_activity(tmp_path):
     assert "explore_activity_story" in bridge.solves
     assert "activity_sweep" in bridge.solves
     assert result.status == "success"
+
+
+def test_check_baas_update(tmp_path, monkeypatch):
+    """BAAS 更新检查：stable 过滤 + 版本比较 + 主版本线兼容判断"""
+    import io
+    from unittest.mock import patch
+
+    from baas_plus.baas_bridge import BaasBridge
+    from baas_plus.config import AppConfig
+
+    repo = tmp_path / "baas3"
+    repo.mkdir(parents=True)
+    (repo / "pyproject.toml").write_text('[project]\nversion = "1.4.2"\n', encoding="utf-8")
+    bridge = BaasBridge(AppConfig(baas={"repo_dir": str(repo)}))
+
+    fake_releases = [
+        {"tag_name": "v1.5.0-beta", "prerelease": True, "draft": False},
+        {"tag_name": "v1.4.3", "prerelease": False, "draft": False,
+         "html_url": "https://github.com/x/releases/v1.4.3", "body": "fixes"},
+        {"tag_name": "v1.4.2", "prerelease": False, "draft": False},
+    ]
+    fake_resp = io.BytesIO(json.dumps(fake_releases).encode())
+
+    with patch("urllib.request.urlopen", return_value=fake_resp):
+        update = bridge.check_baas_update()
+    assert update is not None
+    assert update["local"] == "1.4.2"
+    assert update["latest"] == "1.4.3"
+    assert update["compatible"] is True  # 同 1.x 主版本线
+    assert "v1.4.3" in update["url"]
+
+    # 已是新版本 → 无更新
+    (repo / "pyproject.toml").write_text('[project]\nversion = "1.4.3"\n', encoding="utf-8")
+    fake_resp = io.BytesIO(json.dumps(fake_releases).encode())
+    with patch("urllib.request.urlopen", return_value=fake_resp):
+        assert bridge.check_baas_update() is None
+
+    # 主版本线不同（未来 2.0 转正）→ compatible=False 仍提示
+    (repo / "pyproject.toml").write_text('[project]\nversion = "1.4.3"\n', encoding="utf-8")
+    fake2 = [{"tag_name": "v2.0.0", "prerelease": False, "draft": False,
+              "html_url": "https://github.com/x/releases/v2.0.0", "body": ""}]
+    fake_resp = io.BytesIO(json.dumps(fake2).encode())
+    with patch("urllib.request.urlopen", return_value=fake_resp):
+        update = bridge.check_baas_update()
+    assert update["latest"] == "2.0.0"
+    assert update["compatible"] is False

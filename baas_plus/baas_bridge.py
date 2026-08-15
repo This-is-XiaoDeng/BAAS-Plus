@@ -365,6 +365,78 @@ class BaasBridge:
             raise RuntimeError("Baas_thread 未初始化")
         return self.baas_thread.config_set
 
+    # ---- BAAS 更新检查 ----
+
+    def get_local_baas_version(self) -> str | None:
+        """读取本地 BAAS 版本（repo_dir/pyproject.toml 的 version 字段）"""
+        repo = self.config.baas.repo_dir
+        if not repo:
+            return None
+        path = os.path.join(repo, "pyproject.toml")
+        if not os.path.exists(path):
+            return None
+        try:
+            import tomllib
+
+            with open(path, "rb") as f:
+                data = tomllib.load(f)
+            version = (
+                (data.get("project") or {}).get("version")
+                or (data.get("tool") or {}).get("poetry", {}).get("version")
+            )
+            return version or None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("读取 BAAS 版本失败: %s", exc)
+            return None
+
+    def check_baas_update(self, timeout: float = 8.0) -> dict | None:
+        """检查 BAAS 是否有新版本（GitHub Releases API；失败/无新版返回 None，不阻塞启动）
+
+        返回 {"local", "latest", "compatible", "url", "release_notes"}：
+        - 仅比较 stable release（跳过 prerelease/draft）
+        - compatible：最新 stable 与本地是否同主版本线（BAAS-Plus 依赖 BAAS 的
+          core/ 结构，重构版（如 1.5+ 新结构）可能不兼容，只提示不推荐自动更新）
+        """
+        local = self.get_local_baas_version()
+        if not local:
+            return None
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(
+                "https://api.github.com/repos/pur1fying/blue_archive_auto_script/"
+                "releases?per_page=10",
+                headers={
+                    "User-Agent": "BAAS-Plus",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                releases = json.load(resp)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("检查 BAAS 更新失败: %s", exc)
+            return None
+        stable = [r for r in releases if not r.get("prerelease") and not r.get("draft")]
+        if not stable:
+            return None
+        latest = stable[0]
+        tag = (latest.get("tag_name") or "").lstrip("vV")
+
+        def _num(version: str) -> tuple[int, ...]:
+            parts = re.findall(r"\d+", version)[:3]
+            return tuple(int(p) for p in parts) or (0,)
+
+        local_num, latest_num = _num(local), _num(tag)
+        if not latest_num or latest_num <= local_num:
+            return None
+        return {
+            "local": local,
+            "latest": tag,
+            "compatible": latest_num[0] == local_num[0],
+            "url": latest.get("html_url", ""),
+            "release_notes": (latest.get("body") or "")[:200],
+        }
+
     def get_current_activity(self) -> str | None:
         """读取 BAAS 记录的活动模块名（current_game_activity）
 

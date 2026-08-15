@@ -69,6 +69,7 @@ class Engine:
         self.result = RunResult()
         # arena 与常规任务并发执行时，用锁保证同一时刻仅一个任务操作 BAAS
         self._baas_lock = threading.Lock()
+        self._update_checked = False
 
     # ---- 活动检测 ----
 
@@ -471,6 +472,29 @@ class Engine:
         self.result = RunResult()
         record_id = self.store.add_record("running", "执行开始")
         try:
+            # 0. BAAS 更新检查（进程内只查一次，失败静默不阻塞启动）
+            if not self._update_checked:
+                self._update_checked = True
+                try:
+                    update = await asyncio.to_thread(self.bridge.check_baas_update)
+                except Exception:  # noqa: BLE001
+                    update = None
+                if update:
+                    if update["compatible"]:
+                        logger.warning(
+                            "检测到 BAAS 新版本 %s（当前 %s），建议更新：%s",
+                            update["latest"],
+                            update["local"],
+                            update["url"],
+                        )
+                    else:
+                        logger.warning(
+                            "检测到 BAAS 新版本 %s（当前 %s），但主版本线不同，"
+                            "可能不兼容 BAAS-Plus，请谨慎更新：%s",
+                            update["latest"],
+                            update["local"],
+                            update["url"],
+                        )
             # 1. 模拟器 + BAAS
             adb = self.bridge.start_simulator()
             self.bridge.create_baas(adb)
