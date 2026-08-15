@@ -2,7 +2,7 @@
 
 > 蔚蓝档案自动化调度器：自动开模拟器 → 检测新活动推图（仅已开始活动）→ 执行日常任务 → 按剩余体力扫荡 → 邮件通知 → 自动关模拟器
 
-基于 [BAAS](https://github.com/pur1fying/blue_archive_auto_script) 构建，**不修改其源码**，仅通过官方 API 驱动。
+基于 [BAAS](https://github.com/pur1fying/blue_archive_auto_script) 构建，**不修改其源码**，仅通过调用 BAAS 提供的接口来驱动。
 
 ## ✨ 特性
 
@@ -10,11 +10,11 @@
 |---|---|
 | 🤖 自动启动模拟器 | MuMu / 雷电等，自动获取 ADB 连接 |
 | 🎉 新活动自动推图 | GameKee 数据源检测新活动，剧情/任务/挑战可分别开关；活动模块自动对应（手动配置 > BAAS 记录 > 标题关键词匹配） |
-| 🎯 活动扫荡先进对活动 | 主页轮播图多活动混合轮播时，模板匹配确认当前页=目标活动再进入，避免进错活动；**扫荡前自动推图**（`push_before_sweep`，全推至 SSS）解锁任务后再扫荡 |
+| 🎯 活动扫荡前先确认进对活动 | 主页轮播图多活动混合轮播时，模板匹配确认当前页=目标活动再进入，避免进错活动；**扫荡前自动推图**（`push_before_sweep`，全推至 SSS）解锁任务后再扫荡 |
 | ⚡ 按体力扫荡 | 任务完成后读取实时 AP 计算次数；活动扫荡自动选择**进行中**的活动（手动配置 > BAAS 记录 > 标题关键词匹配），不会扫已结束/仅兑换可用的旧活动 |
-| 🛡 实机检测敌人属性 | 推图进关前自动点击「敌人/克制」OCR 第一个敌人防御类型，按游戏内克制表修正 BAAS 关卡属性数据（重→贯穿、特殊→神秘等），避免社区 JSON 数据错误选错队；复合装甲（新属性「分解」）BAAS 预设体系暂无对应，无法自动选克制队 |
-| 📧 邮件通知 | 执行结果推送到邮箱（SMTP，支持 QQ/163/网易企业邮授权码） |
-| 📅 领取日程最后 | `collect_reward` 在所有任务（含竞技场）完成后执行，奖励档位全部解锁 |
+| 🛡 实机检测敌人属性 | 推图进关前自动点击「敌人/克制」并 OCR 识别第一个敌人的防御类型，按游戏内克制表修正 BAAS 关卡属性数据（重→贯穿、特殊→神秘等），避免因社区 JSON 数据错误选错队伍；复合装甲（新属性「分解」）在 BAAS 预设体系中暂无对应，无法自动选克制队 |
+| 📧 邮件通知 | 执行结果推送到邮箱（SMTP，支持 QQ/163/网易免费企业邮授权码） |
+| 📅 日程奖励最后领取 | `collect_reward` 在所有任务（含竞技场、扫荡）完成后执行，奖励档位全部解锁 |
 | 🖥 独立 WebUI | 浏览器配置任务/扫荡/通知，查看活动状态与执行记录 |
 
 ## 🚀 快速开始（Windows）
@@ -41,7 +41,7 @@ python -m baas_plus.cli run         # 立即执行一次完整流程
 python -m baas_plus.cli test-email  # 测试邮件通知
 ```
 
-> 也支持不安装进 BAAS 环境：在 WebUI 配置 `baas.repo_dir` 指向 BAAS 源码目录，
+> 也支持不安装到 BAAS 环境：在 WebUI 配置 `baas.repo_dir` 指向 BAAS 源码目录，
 > 引擎会自动把它加入 sys.path 并切换工作目录（两种方式等价）。
 > 示例中的 `D:\BAAS` 等路径请替换为你的实际目录。
 
@@ -71,7 +71,7 @@ schtasks /create /tn "BAAS-Plus-Daily" /tr "D:\BAAS\run.bat" /sc daily /st 05:00
    - 程序/脚本：`D:\BAAS\.venv\Scripts\python.exe`
    - 添加参数：`-m baas_plus.cli run`
    - 起始于：`D:\BAAS`
-4. 完成后双击任务 → 「条件」取消勾选「只有在计算机使用交流电源时才启动任务」（笔记本必改）；「设置」可设「运行超过 3 小时停止任务」防卡死
+4. 完成后双击任务 → 「条件」取消勾选「只有在计算机使用交流电源时才启动此任务」（笔记本必改）；「设置」可设「运行超过 3 小时停止任务」防卡死
 
 ## 🖥 WebUI 配置
 
@@ -91,8 +91,8 @@ schtasks /create /tn "BAAS-Plus-Daily" /tr "D:\BAAS\run.bat" /sc daily /st 05:00
 `区域-关卡-次数`，逗号分隔；次数支持数字或 `max`：
 
 ```
-普通图: 15-1-3, 16-3-5
-困难图: 20-1-max      # max = 3 次（困难图单关上限）
+普通图：15-1-3, 16-3-5
+困难图：20-1-max      # max = 3 次（困难图单关上限）
 ```
 
 有活动时自动优先扫活动关卡（活动关卡号在配置中指定）。
@@ -101,6 +101,9 @@ schtasks /create /tn "BAAS-Plus-Daily" /tr "D:\BAAS\run.bat" /sc daily /st 05:00
 
 ```
 baas_plus/
+├── cli.py           # 命令行入口（run / webui / test-email 等）
+├── config.py        # 配置模型与 JSON 读写（data/config.json）
+├── log_setup.py     # 日志初始化
 ├── engine.py        # 核心编排：模拟器 → 活动 → 任务 → 扫荡 → 通知
 ├── activity.py      # GameKee 活动数据源
 ├── baas_bridge.py   # BAAS 集成层（惰性导入，仅 Windows 运行时装 BAAS）
@@ -111,7 +114,7 @@ baas_plus/
 
 ## ⚠️ 已知限制
 
-- 活动推图依赖 BAAS 社区维护的活动模块（`module/activities/`，每个活动一个插件）。模块自动对应按优先级：手动配置 `baas.current_activity` > BAAS 记录的 `current_game_activity` > 活动标题关键词匹配；GameKee 标题为纯中文且无任何记录时无法自动对应，需手动在配置中指定 `baas.current_activity`
+- 活动推图依赖 BAAS 社区维护的活动模块（`module/activities/`，每个活动一个插件）。模块自动对应按优先级：手动配置 `baas.current_activity` > BAAS 记录的 `current_game_activity` > 活动标题关键词匹配；当 GameKee 标题为纯中文、未收录于内置别名表且 BAAS 无任何记录时无法自动对应，需手动在配置中指定 `baas.current_activity`
 - 实际运行需 Windows + 模拟器 + 完整 BAAS 环境；调度器本身可在任意平台开发测试（不 import core 的部分）
 - BAAS 上游 release 包与源码偶尔字段不同步（如 v1.4.3 的 `steam_app_process_name` vs 源码 `PC_app_process_name`），BAAS-Plus 首次调用时会自动对齐 `config/static.json` 与 `config/<server>/config.json` 字段（幂等，保留用户已有配置）
 
