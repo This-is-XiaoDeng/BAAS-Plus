@@ -376,15 +376,11 @@ class BaasBridge:
         if not os.path.exists(path):
             return None
         try:
-            import tomllib
-
-            with open(path, "rb") as f:
-                data = tomllib.load(f)
-            version = (
-                (data.get("project") or {}).get("version")
-                or (data.get("tool") or {}).get("poetry", {}).get("version")
-            )
-            return version or None
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            # 正则匹配首个 version 行（[project] 表），零依赖兼容 Py3.9+
+            m = re.search(r"^version\s*=\s*[\"']([^\"']+)[\"']", text, re.M)
+            return m.group(1) if m else None
         except Exception as exc:  # noqa: BLE001
             logger.debug("读取 BAAS 版本失败: %s", exc)
             return None

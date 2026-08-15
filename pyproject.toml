@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "baas-plus"
-version = "0.1.0"
+version = "1.0.0"
 description = "基于 BAAS (Blue Archive Auto Script) 的自动化调度器：活动检测、自动推图、按体力扫荡、邮件通知 + WebUI 配置"
 authors = ["This-is-XiaoDeng <1744793737@qq.com>"]
 license = "AGPL-3.0"
