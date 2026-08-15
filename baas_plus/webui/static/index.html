@@ -14,6 +14,8 @@
   h1 { font-size: 20px; margin-bottom: 4px; }
   h2 { font-size: 15px; margin-bottom: 12px; color: var(--accent); }
   .sub { color: var(--muted); margin-bottom: 24px; }
+  .gh-link { color: var(--accent); text-decoration: none; margin-left: 12px; font-size: 12.5px; }
+  .gh-link:hover { text-decoration: underline; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1200px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
   .card.full { grid-column: 1 / -1; }
@@ -53,7 +55,9 @@
 </head>
 <body>
   <h1>🐱 BAAS-Plus 控制台</h1>
-  <div class="sub">基于 BAAS 的蔚蓝档案自动化调度器 · 配置 / 活动 / 执行记录</div>
+  <div class="sub">基于 BAAS 的蔚蓝档案自动化调度器 · 配置 / 活动 / 执行记录
+    <a class="gh-link" href="https://github.com/This-is-XiaoDeng/BAAS-Plus" target="_blank" rel="noopener">📦 GitHub ↗</a>
+  </div>
 
   <div class="actions">
     <button class="btn primary" onclick="saveConfig()">💾 保存配置</button>
