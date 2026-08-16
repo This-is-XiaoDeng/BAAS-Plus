@@ -49,7 +49,7 @@ def create_app(config: AppConfig) -> FastAPI:
     app = FastAPI(title="BAAS-Plus WebUI", version="0.1.0")
     store = Store(config.data_path / "baas_plus.db")
 
-    def resolve_account(ref: str | None) -> AccountConfig:
+    def resolve_account(ref: Optional[str]) -> AccountConfig:
         """按账号 id 解析（缺省 = 第一个账号）；找不到抛 404"""
         if ref:
             for acc in config.accounts:
@@ -99,7 +99,7 @@ def create_app(config: AppConfig) -> FastAPI:
         ]
 
     @app.get("/api/baas-config-dirs")
-    def get_baas_config_dirs(account: str | None = None) -> list[str]:
+    def get_baas_config_dirs(account: Optional[str] = None) -> list[str]:
         """BAAS 配置目录候选（BAAS 根 config/ 下的子目录；读取失败时返回内置选项）"""
         import os
 
@@ -122,7 +122,7 @@ def create_app(config: AppConfig) -> FastAPI:
     # ---- 账号管理 ----
 
     @app.post("/api/accounts")
-    def create_account(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    def create_account(body: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """新建账号：复制默认账号（accounts[0]）配置，仅替换 id/name"""
         nonlocal config
         template = config.accounts[0]
@@ -150,13 +150,13 @@ def create_app(config: AppConfig) -> FastAPI:
     # ---- 执行记录 ----
 
     @app.get("/api/records")
-    def get_records(limit: int = 50, account: str | None = None) -> list[dict]:
+    def get_records(limit: int = 50, account: Optional[str] = None) -> list[dict]:
         return store.list_records(account=account, limit=limit)
 
     # ---- 活动 ----
 
     @app.get("/api/activities")
-    async def get_activities(account: str | None = None) -> dict[str, Any]:
+    async def get_activities(account: Optional[str] = None) -> dict[str, Any]:
         acc = resolve_account(account)
         fetcher = ActivityFetcher(acc.activity.server)
         try:
@@ -176,7 +176,7 @@ def create_app(config: AppConfig) -> FastAPI:
         }
 
     @app.post("/api/scan")
-    async def scan(account: str | None = None) -> dict[str, Any]:
+    async def scan(account: Optional[str] = None) -> dict[str, Any]:
         acc = resolve_account(account)
         engine = Engine(
             acc,
@@ -198,7 +198,7 @@ def create_app(config: AppConfig) -> FastAPI:
         account: Optional[str] = None  # 账号 id；缺省或 "all" = 全部启用账号
 
     @app.post("/api/run")
-    async def run(body: RunBody | None = None) -> dict[str, Any]:
+    async def run(body: Optional[RunBody] = None) -> dict[str, Any]:
         runner = MultiAccountRunner(config, store=store)
         ref = (body.account if body else None) or "all"
         if ref == "all":
@@ -263,7 +263,7 @@ def create_app(config: AppConfig) -> FastAPI:
     # ---- 测试 - 模拟器 / BAAS ----
 
     @app.post("/api/test-simulator")
-    def test_simulator(account: str | None = None) -> dict[str, Any]:
+    def test_simulator(account: Optional[str] = None) -> dict[str, Any]:
         from ..baas_bridge import BaasBridge
 
         acc = resolve_account(account)
@@ -275,7 +275,7 @@ def create_app(config: AppConfig) -> FastAPI:
             raise HTTPException(status_code=400, detail=f"模拟器测试失败: {exc}") from exc
 
     @app.post("/api/test-baas")
-    def test_baas(account: str | None = None) -> dict[str, Any]:
+    def test_baas(account: Optional[str] = None) -> dict[str, Any]:
         from ..baas_bridge import BaasBridge
 
         acc = resolve_account(account)
