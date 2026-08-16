@@ -18,7 +18,7 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
@@ -195,7 +195,7 @@ def create_app(config: AppConfig) -> FastAPI:
     # ---- 执行 ----
 
     class RunBody(BaseModel):
-        account: str | None = None  # 账号 id；缺省或 "all" = 全部启用账号
+        account: Optional[str] = None  # 账号 id；缺省或 "all" = 全部启用账号
 
     @app.post("/api/run")
     async def run(body: RunBody | None = None) -> dict[str, Any]:

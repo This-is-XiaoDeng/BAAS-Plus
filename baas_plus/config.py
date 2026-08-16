@@ -13,7 +13,7 @@ import json
 import os
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -190,7 +190,7 @@ class AccountConfig(BaseModel):
     activity: ActivityConfig = Field(default_factory=ActivityConfig)
     sweep: SweepConfig = Field(default_factory=SweepConfig)
     # 通知收件人覆盖（None = 使用全局 notify.email.to_addrs）
-    notify_to_addrs: list[str] | None = None
+    notify_to_addrs: Optional[list[str]] = None
 
     @model_validator(mode="after")
     def _check_tasks(self) -> "AccountConfig":
