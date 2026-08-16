@@ -1,6 +1,6 @@
 """多账号批量执行编排
 
-串行逐个账号执行完整流程（模拟器 → 活动检测/推图 → 任务 → 扫荡 → 通知），
+串行逐个账号执行完整流程（模拟器 → 活动检测/推图 → 任务 → 扫荡），
 账号间完全隔离：每个账号独立的 Engine / BaasBridge / 模拟器实例。
 共享进程级资源：
 - BAAS Main（OCR 服务器进程）：跨账号复用，避免重复拉起（create_baas 仅在
@@ -8,16 +8,19 @@
 - ActivityFetcher：按 server 缓存实例（同服活动数据只需拉取一次）。
 
 失败隔离：单个账号异常不外抛，兜底为 failed 的 RunResult，不影响其余账号。
+全部账号执行完成后统一发送一封汇总邮件（总耗时 + 各账号结果 + 最终剩余体力）。
 """
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable
 
 from .activity import ActivityFetcher
 from .baas_bridge import BaasBridge
 from .config import AccountConfig, AppConfig
 from .engine import Engine, RunResult
+from .notifier import EmailNotifier
 from .store import Store
 
 logger = logging.getLogger(__name__)
@@ -77,7 +80,6 @@ class MultiAccountRunner:
             store=self.store,
             bridge=bridge,
             fetcher=fetcher,
-            notify=self.config.notify,
             data_dir=str(self.config.data_path),
         )
 
@@ -108,8 +110,72 @@ class MultiAccountRunner:
         return account.id, result
 
     async def run_all(self) -> list[tuple[str, RunResult]]:
-        """串行执行全部启用账号，返回 [(account_id, RunResult), ...]"""
+        """串行执行全部启用账号，统一发送汇总邮件，返回 [(account_id, RunResult), ...]"""
+        start = time.monotonic()
         results: list[tuple[str, RunResult]] = []
         for account in self.enabled_accounts():
             results.append(await self.run_account(account.id))
+        elapsed = time.monotonic() - start
+        self._notify_summary(results, elapsed)
         return results
+
+    def _notify_summary(
+        self,
+        results: list[tuple[str, RunResult]],
+        elapsed: float,
+    ) -> None:
+        """全部账号执行完成后发送一封汇总邮件
+
+        包含：总耗时、各账号执行结果（状态/任务/扫荡明细）、最终剩余体力。
+        收件人取全局通知配置（notify.email.to_addrs）。
+        """
+        if not self.config.notify.enabled:
+            return
+        notifier = EmailNotifier(self.config.notify.email)
+        if not notifier.enabled:
+            return
+
+        total = len(results)
+        failed_count = sum(1 for _, r in results if r.status == "failed")
+        success_count = total - failed_count
+        status_text = (
+            f"全部成功（{success_count}/{total}）" if failed_count == 0
+            else f"{failed_count}/{total} 个账号失败"
+        )
+
+        # 总耗时格式化
+        minutes, secs = divmod(int(elapsed), 60)
+        hours, minutes = divmod(minutes, 60)
+        duration_str = f"{hours}h {minutes}m {secs}s" if hours else f"{minutes}m {secs}s"
+
+        subject = f"[BAAS-Plus] 执行汇总 — {status_text}（耗时 {duration_str}）"
+
+        # 构建邮件正文
+        lines: list[str] = []
+        lines.append(f"总耗时: {duration_str}")
+        lines.append(f"账号数: {total}，成功: {success_count}，失败: {failed_count}")
+        lines.append("")
+
+        for account_id, result in results:
+            account = self.get_account(account_id)
+            lines.append(f"━━━ [{account.name}] {account.baas.server} ━━━")
+            lines.append(f"状态: {result.status}")
+            lines.append(f"摘要: {result.summary}")
+            if result.executed_tasks:
+                lines.append(f"任务: {', '.join(result.executed_tasks)}")
+            if result.swept:
+                lines.append(f"扫荡: {', '.join(result.swept)}")
+            lines.append("")
+
+        # 最终剩余体力（取最后一个成功执行的账号的体力）
+        last_ap = -1
+        for _, result in reversed(results):
+            if result.ap_before_sweep >= 0:
+                last_ap = result.ap_before_sweep
+                break
+        if last_ap >= 0:
+            lines.append(f"最终剩余体力: {last_ap}")
+        else:
+            lines.append("最终剩余体力: 无法读取")
+
+        notifier.send(subject, "\n".join(lines))

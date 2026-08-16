@@ -183,7 +183,6 @@ def create_app(config: AppConfig) -> FastAPI:
             account_id=acc.id,
             store=store,
             fetcher=ActivityFetcher(acc.activity.server),
-            notify=config.notify,
         )
         new_events = await engine.detect_new_activities()
         return {

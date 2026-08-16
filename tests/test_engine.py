@@ -171,7 +171,6 @@ def make_engine(bridge=None, events=None, data_dir=None, account_id="acc_test", 
         store=store,
         bridge=bridge or FakeBridge(),
         fetcher=FakeFetcher(events),
-        notify=config.notify,
     )
     return engine
 

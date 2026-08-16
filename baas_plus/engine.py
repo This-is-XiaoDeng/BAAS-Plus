@@ -24,8 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from .activity import ACTIVITY_MODULE_ALIASES, ActivityFetcher, EventType, GameEvent
 from .baas_bridge import BaasBridge, SWEEP_ITEM_RE, compute_sweep_times
-from .config import AccountConfig, NotifyConfig, SWEEP_TASKS
-from .notifier import EmailNotifier
+from .config import AccountConfig, SWEEP_TASKS
 from .store import Store
 
 logger = logging.getLogger(__name__)
@@ -62,9 +61,9 @@ class RunResult:
 class Engine:
     """单个账号的一次执行编排（多账号时每个账号一个 Engine 实例）
 
-    构造接收账号配置（AccountConfig）；store 为全局共享（带 account 维度），
-    notify 为全局通知配置（SMTP 发件），收件人按账号 notify_to_addrs 覆盖。
+    构造接收账号配置（AccountConfig）；store 为全局共享（带 account 维度）。
     bridge 可注入（多账号串行时由 MultiAccountRunner 传入共享 Main 的实例）。
+    邮件通知由 MultiAccountRunner 在全部账号执行完成后统一发送汇总邮件。
     """
 
     def __init__(
@@ -74,12 +73,10 @@ class Engine:
         store: StoreType | None = None,
         bridge: BaasBridge | None = None,
         fetcher: ActivityFetcher | None = None,
-        notify: NotifyConfig | None = None,
         data_dir: str | None = None,
     ) -> None:
         self.config = account
         self.account_id = account_id or account.id
-        self.notify = notify or NotifyConfig()
         self.store = store or Store(Path(data_dir or "data") / "baas_plus.db")
         self.bridge = bridge or BaasBridge(account)
         self.fetcher = fetcher or ActivityFetcher(account.activity.server)
@@ -629,7 +626,6 @@ class Engine:
             self.result.summary = f"执行失败: {exc}"
             self.store.finish_record(record_id, "failed", self.result.summary, {"error": str(exc)})
         finally:
-            self._notify()
             self.bridge.stop()
         return self.result
 
@@ -644,24 +640,6 @@ class Engine:
         if self.result.swept:
             parts.append(f"扫荡 {len(self.result.swept)} 项（体力 {self.result.ap_before_sweep}）")
         return "；".join(parts)
-
-    def _notify(self) -> None:
-        """执行结果邮件通知（全局 SMTP 发件；收件人按账号覆盖，主题带账号名）"""
-        if not self.notify.enabled:
-            return
-        to_addrs = self.config.notify_to_addrs or self.notify.email.to_addrs
-        email = self.notify.email.model_copy(update={"to_addrs": to_addrs})
-        notifier = EmailNotifier(email)
-        subject = (
-            f"[{self.config.name}] BAAS-Plus 执行"
-            f"{'成功' if self.result.status != 'failed' else '失败'} ({self.config.baas.server})"
-        )
-        body = f"{self.result.summary}\n\n详情:\n"
-        body += "\n".join(f"- {t}" for t in self.result.executed_tasks)
-        if self.result.swept:
-            body += "\n\n扫荡明细:\n" + "\n".join(f"- {s}" for s in self.result.swept)
-        notifier.send(subject, body)
-
 
 def _now() -> int:
     import time
