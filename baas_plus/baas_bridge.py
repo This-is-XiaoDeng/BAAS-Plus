@@ -68,6 +68,11 @@ MISSION_ARMOR_MAP = {
     "弹性装甲": "shock",  # 兼容 OCR 变体
 }
 
+# 点开活动后「活动时间已结束」弹窗的文字识别区域（1280x720 基准坐标，_ocr_region 按 ratio 缩放）
+# 与匹配文本：进入已结束的活动时游戏弹出结束提示，而非进入活动菜单。
+ACTIVITY_ENDED_OCR_REGION = (857, 349, 1029, 426)
+ACTIVITY_ENDED_TEXT = "活动时间已结束"
+
 
 def import_baas(repo_dir: str = "") -> Any:
     """惰性导入 BAAS 模块
@@ -916,6 +921,11 @@ class BaasBridge:
         模板匹配已确认轮播图当前页 = 目标活动时调用（enter1 按钮位置固定，
         直接点击比 BAAS co_detect 轮询快，避免轮播图轮走）。返回 True 表示
         已进入活动菜单（activity_menu 特征出现）。
+
+        等待期间若在 ACTIVITY_ENDED_OCR_REGION 识别到「活动时间已结束」
+        （点到的是已结束的活动，如轮播图换页瞬间点击落在已结束活动上），
+        提前返回 False，由调用方返回主界面并重新尝试打开活动
+        （见 engine._enter_and_run 的重试循环）。
         """
         if self.baas_thread is None:
             raise RuntimeError("Baas_thread 未初始化")
@@ -940,6 +950,11 @@ class BaasBridge:
                     return True
             except Exception:  # noqa: BLE001
                 pass
+            # 复用刚刷新的截图帧 OCR 结束弹窗区域，命中即提前返回（避免白等超时）
+            frame = getattr(baas, "latest_img_array", None)
+            if ACTIVITY_ENDED_TEXT in self._ocr_crop(frame, ACTIVITY_ENDED_OCR_REGION):
+                logger.warning("点开活动后检测到「活动时间已结束」弹窗，提前结束进入检测")
+                return False
             time.sleep(0.5)
         logger.warning("点击 enter1 后 %.0fs 内未检测到 activity_menu，可能未进入活动", timeout)
         return False
@@ -951,19 +966,13 @@ class BaasBridge:
         self.baas_thread.to_main_page()
         logger.info("BAAS-Plus 已回到主界面")
 
-    def _ocr_region(
-        self, region: tuple[int, int, int, int], enlarge: int = 2
+    def _ocr_crop(
+        self, img: Any, region: tuple[int, int, int, int], enlarge: int = 2
     ) -> str:
-        """OCR 指定区域（720p 基准坐标）；复用轮播图 OCR 预处理（刷新截图+放大+CLAHE）"""
-        if self.baas_thread is None or self.baas_thread.ocr is None:
+        """对已截图的帧 OCR 指定区域（不刷新截图），供循环内复用当前帧"""
+        if self.baas_thread is None or self.baas_thread.ocr is None or img is None:
             return ""
         try:
-            update = getattr(self.baas_thread, "update_screenshot_array", None)
-            if callable(update):
-                update()
-            img = getattr(self.baas_thread, "latest_img_array", None)
-            if img is None:
-                return ""
             ratio = getattr(self.baas_thread, "ratio", 1.0) or 1.0
             x1, y1, x2, y2 = region
             crop = img[
@@ -993,6 +1002,35 @@ class BaasBridge:
         except Exception as exc:  # noqa: BLE001
             logger.warning("OCR 区域失败 %s: %s", region, exc)
             return ""
+
+    def _ocr_region(
+        self, region: tuple[int, int, int, int], enlarge: int = 2
+    ) -> str:
+        """OCR 指定区域（720p 基准坐标）；复用轮播图 OCR 预处理（刷新截图+放大+CLAHE）"""
+        if self.baas_thread is None or self.baas_thread.ocr is None:
+            return ""
+        try:
+            update = getattr(self.baas_thread, "update_screenshot_array", None)
+            if callable(update):
+                update()
+        except Exception:  # noqa: BLE001
+            pass
+        img = getattr(self.baas_thread, "latest_img_array", None)
+        if img is None:
+            return ""
+        return self._ocr_crop(img, region, enlarge)
+
+    def activity_ended_popup(self) -> bool:
+        """OCR 检测点开活动后的「活动时间已结束」弹窗（进入已结束活动的提示）
+
+        识别区域 ACTIVITY_ENDED_OCR_REGION（1280x720 基准坐标，内部按 ratio
+        缩放）。识别到返回 True，调用方应返回主界面并重新尝试打开活动。
+        """
+        text = self._ocr_region(ACTIVITY_ENDED_OCR_REGION)
+        if ACTIVITY_ENDED_TEXT in text:
+            logger.info("检测到「%s」弹窗（OCR 原文: %r）", ACTIVITY_ENDED_TEXT, text)
+            return True
+        return False
 
     def detect_mission_attribute(self) -> str | None:
         """在任务详情页点击「敌人/克制」，OCR 第一个敌人的防御类型 → 返回克制属性

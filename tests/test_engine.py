@@ -11,7 +11,7 @@ from baas_plus.activity import (
 )
 from baas_plus.baas_bridge import compute_sweep_times
 from baas_plus.config import AppConfig
-from baas_plus.engine import Engine, HARD_MAX_TIMES
+from baas_plus.engine import ACTIVITY_ENTER_MAX_RETRIES, Engine, HARD_MAX_TIMES
 
 
 class FakeBridge:
@@ -113,6 +113,9 @@ class FakeBridge:
     def enter_current_activity(self, timeout=8.0):
         self.solves.append("enter_current_activity")
         return getattr(self, "enter_ok", True)
+
+    def activity_ended_popup(self):
+        return getattr(self, "ended_popup", False)
 
     def solve_activity_sweep_after_enter(self):
         self.solves.append("activity_sweep")
@@ -580,6 +583,89 @@ async def test_activity_sweep_ensures_and_restores_main_page(tmp_path):
         last[s] = i
     assert first["go_main_page"] < first["enter_current_activity"]
     assert last["go_main_page"] > last["activity_sweep"]
+
+
+@pytest.mark.asyncio
+async def test_activity_sweep_retries_on_ended_popup(tmp_path):
+    """点开活动后弹出「活动时间已结束」→ 返回主界面重新尝试打开活动，最终成功
+
+    轮播图换页瞬间点击可能落在已结束的活动上：前两次进入被结束弹窗打断，
+    第三次成功进入活动菜单并执行扫荡。每次重试都先回主界面再等轮播图。
+    """
+    now = int(time.time())
+    running = GameEvent(
+        id=61, title="复刻活动【笑笑闹闹 走走绕绕】", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+
+    class RetryBridge(FakeBridge):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.enter_attempts = 0
+            self.popup_checks = 0
+
+        def enter_current_activity(self, timeout=8.0):
+            self.solves.append("enter_current_activity")
+            self.enter_attempts += 1
+            return self.enter_attempts >= 3  # 前两次被结束弹窗打断，第三次成功
+
+        def activity_ended_popup(self):
+            self.popup_checks += 1
+            return True  # 进入失败原因始终是「活动时间已结束」弹窗
+
+    bridge = RetryBridge(ap=500)
+    bridge.activity_modules = ["LivelyandBusily"]
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+        activity={"push_before_sweep": False},
+    )
+    result = await engine.run_once()
+    assert bridge.solves.count("enter_current_activity") == 3
+    assert bridge.solves.count("activity_sweep") == 1
+    # 每次重试前都回主界面（第 3 次成功后扫荡结束还会再回一次主界面）
+    assert bridge.solves.count("go_main_page") >= 3
+    assert bridge.popup_checks == 2
+    assert result.swept == ["activity:1(auto,LivelyandBusily)"]
+
+
+@pytest.mark.asyncio
+async def test_activity_sweep_skipped_when_ended_popup_persists(tmp_path):
+    """连续多次进入活动均提示「活动时间已结束」→ 跳过活动扫荡，不回退 BAAS 原生扫荡
+
+    活动确实已结束时，回退 BAAS 原生 activity_sweep 只会在结束弹窗上反复
+    点击卡死，因此直接跳过该活动。
+    """
+    now = int(time.time())
+    running = GameEvent(
+        id=62, title="复刻活动【笑笑闹闹 走走绕绕】", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+
+    class EndedBridge(FakeBridge):
+        def enter_current_activity(self, timeout=8.0):
+            self.solves.append("enter_current_activity")
+            return False
+
+        def activity_ended_popup(self):
+            return True
+
+    bridge = EndedBridge(ap=500)
+    bridge.activity_modules = ["LivelyandBusily"]
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+        activity={"push_before_sweep": False},
+    )
+    result = await engine.run_once()
+    assert bridge.solves.count("activity_sweep") == 0
+    assert bridge.solves.count("enter_current_activity") == ACTIVITY_ENTER_MAX_RETRIES
+    assert bridge.solves.count("go_main_page") == ACTIVITY_ENTER_MAX_RETRIES
+    assert result.swept == []
 
 
 @pytest.mark.asyncio

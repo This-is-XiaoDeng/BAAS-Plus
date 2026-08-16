@@ -172,6 +172,83 @@ def test_match_banner_activity_no_screenshot(bridge):
     assert bridge.match_banner_activity(["LivelyandBusily"]) is None
 
 
+class FakeOcrForRegion:
+    """返回固定文本的假 OCR（忽略图像内容，仅验证区域 OCR 管道）"""
+
+    def __init__(self, text):
+        self.text = text
+
+    def ocr_for_single_line(self, **kwargs):
+        return self.text
+
+
+class FakeBaasThreadForRegionOcr:
+    """带固定 OCR 结果与截图帧的假 Baas_thread（供区域 OCR / 结束弹窗测试）"""
+
+    def __init__(self, text, img=None):
+        self.ocr = FakeOcrForRegion(text)
+        self.latest_img_array = img
+        self.ratio = 1.0
+        self.refreshes = 0
+
+    def update_screenshot_array(self):
+        self.refreshes += 1
+
+
+def _blank_screen():
+    import numpy as np
+
+    return np.zeros((720, 1280, 3), dtype=np.uint8)
+
+
+def test_activity_ended_popup_detected(bridge):
+    """OCR 到「活动时间已结束」→ 返回 True（先刷新截图帧再识别）"""
+    baas = FakeBaasThreadForRegionOcr("活动时间已结束", img=_blank_screen())
+    bridge.baas_thread = baas
+    assert bridge.activity_ended_popup() is True
+    assert baas.refreshes == 1
+
+
+def test_activity_ended_popup_not_detected(bridge):
+    """区域 OCR 到其他文本（如正常活动页内容）→ 返回 False"""
+    baas = FakeBaasThreadForRegionOcr("活动进行中", img=_blank_screen())
+    bridge.baas_thread = baas
+    assert bridge.activity_ended_popup() is False
+
+
+def test_activity_ended_popup_no_frame(bridge):
+    """无截图帧 → 返回 False 不崩溃"""
+    baas = FakeBaasThreadForRegionOcr("活动时间已结束", img=None)
+    bridge.baas_thread = baas
+    assert bridge.activity_ended_popup() is False
+
+
+def test_enter_current_activity_returns_early_on_ended_popup(bridge, monkeypatch, no_sleep):
+    """进入活动菜单检测期间识别到「活动时间已结束」→ 提前返回 False（不白等超时）"""
+    import sys
+
+    class FakeImage:
+        @staticmethod
+        def compare_image(baas, feat):
+            return False  # 永远检测不到 activity_menu
+
+    class FakeCore:
+        image = FakeImage()
+
+    monkeypatch.setitem(sys.modules, "core", FakeCore())  # 让 `from core import image` 成功
+    thread = FakeBaasThreadForRegionOcr("活动时间已结束", img=_blank_screen())
+    thread.clicked = None
+
+    def _click(x, y):
+        thread.clicked = (x, y)
+
+    thread.click = _click
+    bridge.baas_thread = thread
+    assert bridge.enter_current_activity() is False
+    assert thread.clicked == (1196, 195)  # 先点了 enter1
+    assert thread.refreshes >= 1
+
+
 class FakeBaasThreadForAp:
     """带可配置截图帧序列的假 Baas_thread（供 get_ap 测试）
 

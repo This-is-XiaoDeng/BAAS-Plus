@@ -40,6 +40,10 @@ NORMAL_SWEEP_AP_COST = 10
 HARD_SWEEP_AP_COST = 20
 HARD_MAX_TIMES = 3  # BAAS 困难图单关上限
 
+# 点开活动后若弹出「活动时间已结束」（轮播图换页瞬间点到已结束的活动），
+# 返回主界面重新等待轮播图并再次尝试进入的最大次数；多次失败视为活动已结束，跳过扫荡
+ACTIVITY_ENTER_MAX_RETRIES = 3
+
 
 @dataclass
 class RunResult:
@@ -365,20 +369,45 @@ class Engine:
                     轮播图区域（banner_region）只在主界面存在：扫描前先回主界面，
                     否则上一任务遗留的页面（活动菜单/任务列表等）会让模板/OCR
                     读到错误内容，甚至 enter1 固定坐标点击落在无关按钮上。
+
+                    点开活动后若 OCR 到「活动时间已结束」（轮播图换页瞬间点击
+                    落在了已结束的活动上），返回主界面重新等待轮播图并再次尝试，
+                    最多 ACTIVITY_ENTER_MAX_RETRIES 次；多次失败说明目标活动
+                    确实已结束，跳过该活动扫荡（不回退 BAAS 原生扫荡，避免在
+                    结束弹窗上反复点击卡死）。
                     """
-                    self.bridge.go_main_page()
-                    if not await self._wait_for_activity_banner(keywords, module=module):
-                        logger.warning("轮播图未就绪，跳过「%s」", task)
-                        return False
-                    if self.bridge.enter_current_activity():
-                        if task == "explore_activity_mission":
-                            self.bridge.solve_activity_explore_mission()
-                        else:
-                            self.bridge.solve_activity_sweep_after_enter()
+                    for attempt in range(1, ACTIVITY_ENTER_MAX_RETRIES + 1):
+                        self.bridge.go_main_page()
+                        if not await self._wait_for_activity_banner(
+                            keywords, module=module
+                        ):
+                            logger.warning("轮播图未就绪，跳过「%s」", task)
+                            return False
+                        if self.bridge.enter_current_activity():
+                            if task == "explore_activity_mission":
+                                self.bridge.solve_activity_explore_mission()
+                            else:
+                                self.bridge.solve_activity_sweep_after_enter()
+                            return True
+                        if self.bridge.activity_ended_popup():
+                            logger.warning(
+                                "点开活动后检测到「活动时间已结束」，返回主界面重新尝试"
+                                "（第 %d/%d 次）",
+                                attempt,
+                                ACTIVITY_ENTER_MAX_RETRIES,
+                            )
+                            continue
+                        logger.warning(
+                            "未能确认进入活动菜单，回退 BAAS 原生 %s（可能进错活动）", task
+                        )
+                        self.bridge.solve(task)
                         return True
-                    logger.warning("未能确认进入活动菜单，回退 BAAS 原生 %s（可能进错活动）", task)
-                    self.bridge.solve(task)
-                    return True
+                    logger.warning(
+                        "连续 %d 次尝试进入活动均提示「活动时间已结束」，活动已结束，跳过「%s」",
+                        ACTIVITY_ENTER_MAX_RETRIES,
+                        task,
+                    )
+                    return False
 
                 if self.config.activity.push_before_sweep:
                     # 先推图（打通任务至全 SSS；已 SSS 的关卡快速跳过）：
