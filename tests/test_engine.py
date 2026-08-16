@@ -144,17 +144,35 @@ class FakeFetcher:
         return self.events
 
 
-def make_engine(bridge=None, events=None, data_dir=None, **cfg_kwargs):
+def make_engine(bridge=None, events=None, data_dir=None, account_id="acc_test", **cfg_kwargs):
     if data_dir is None:
         import tempfile
 
         data_dir = tempfile.mkdtemp(prefix="baas_plus_test_")
-    config = AppConfig(data_dir=data_dir, **cfg_kwargs)
+    # cfg_kwargs 的键与 AccountConfig 字段一致（baas/sweep/simulator/activity），
+    # 作为首个账号配置传入（多账号结构）；account_id 固定，保证同 data_dir 下
+    # 多次运行属于同一账号（活动状态/执行记录正确共享）
+    app_kwargs: dict = {"data_dir": data_dir}
+    app_kwargs["accounts"] = [{"id": account_id, **cfg_kwargs}]
+    config = AppConfig(**app_kwargs)
     # 默认给一个活动模块便于推图测试；显式传 current_activity 可覆盖（如 ""）
-    config.baas.current_activity = (cfg_kwargs.get("baas") or {}).get(
+    config.accounts[0].baas.current_activity = (cfg_kwargs.get("baas") or {}).get(
         "current_activity", "SayBing"
     )
-    engine = Engine(config, bridge=bridge or FakeBridge(), fetcher=FakeFetcher(events))
+    from pathlib import Path
+
+    from baas_plus.store import Store
+
+    account = config.accounts[0]
+    store = Store(Path(data_dir) / "baas_plus.db")
+    engine = Engine(
+        account,
+        account_id=account.id,
+        store=store,
+        bridge=bridge or FakeBridge(),
+        fetcher=FakeFetcher(events),
+        notify=config.notify,
+    )
     return engine
 
 
@@ -271,11 +289,14 @@ async def test_run_failure_when_simulator_fails(tmp_path):
 def test_has_active_activity(tmp_path):
     engine = make_engine(FakeBridge(), events=[], data_dir=str(tmp_path))
     assert not engine.has_active_activity()  # 空 store
+    from pathlib import Path
+
     from baas_plus.store import Store
 
-    store = Store(engine.config.data_path / "x.db")
+    store = Store(Path(engine.store.db_path).parent / "x.db")
     store.mark_activity_seen(
-        GameEvent(id=9, title="A", start_at=0, end_at=int(time.time()) + 1000, event_type=EventType.EVENT)
+        engine.account_id,
+        GameEvent(id=9, title="A", start_at=0, end_at=int(time.time()) + 1000, event_type=EventType.EVENT),
     )
     engine.store = store
     assert engine.has_active_activity()
@@ -283,15 +304,19 @@ def test_has_active_activity(tmp_path):
 
 def test_has_active_activity_excludes_assault(tmp_path):
     """总力战/大决战等 assault 事件不应触发「有活动优先扫活动」"""
+    from pathlib import Path
+
     from baas_plus.store import Store
 
     engine = make_engine(FakeBridge(), events=[], data_dir=str(tmp_path))
-    store = Store(engine.config.data_path / "x.db")
+    store = Store(Path(engine.store.db_path).parent / "x.db")
     store.mark_activity_seen(
-        GameEvent(id=10, title="总力战", start_at=0, end_at=int(time.time()) + 1000, event_type=EventType.ASSAULT)
+        engine.account_id,
+        GameEvent(id=10, title="总力战", start_at=0, end_at=int(time.time()) + 1000, event_type=EventType.ASSAULT),
     )
     store.mark_activity_seen(
-        GameEvent(id=11, title="卡池", start_at=0, end_at=int(time.time()) + 1000, event_type=EventType.CARD)
+        engine.account_id,
+        GameEvent(id=11, title="卡池", start_at=0, end_at=int(time.time()) + 1000, event_type=EventType.CARD),
     )
     engine.store = store
     assert not engine.has_active_activity()
@@ -312,8 +337,7 @@ async def test_not_started_activity_not_pushed(tmp_path):
     assert result.new_activities == []
     assert result.pushed_activities == []
     # 未开始：不标记已见 → 活动开始时再跑一次会被检测为新活动
-    store = Store(engine.config.data_path / "baas_plus.db")
-    assert not store.is_activity_seen(not_started)
+    assert not engine.store.is_activity_seen(engine.account_id, not_started)
 
     started = GameEvent(
         id=21, title="预告活动", start_at=now - 10, end_at=now + 86400, event_type=EventType.EVENT
@@ -891,7 +915,7 @@ def test_baas_sweep_config_file_only(tmp_path):
         '  "hardPriority": ["\'[\\\\\'[\\\\\\\\\\\\\'3-3-3", "\'9-3-3"]\n}',
         encoding="utf-8",
     )
-    bridge = BaasBridge(AppConfig(baas={"repo_dir": str(repo), "config_dir": "cn"}))
+    bridge = BaasBridge(AppConfig(accounts=[{"baas": {"repo_dir": str(repo), "config_dir": "cn"}}]))
 
     # 读取：自动清理污染，且不需要 Baas_thread
     cfg = bridge.get_baas_sweep_config()
@@ -916,8 +940,12 @@ def test_sync_sweep_push_back_to_baas(tmp_path):
     cfg_file = cfg_dir / "config.json"
     cfg_file.write_text('{\n  "mainlinePriority": "",\n  "hardPriority": ""\n}', encoding="utf-8")
     config = AppConfig(
-        baas={"repo_dir": str(repo), "config_dir": "cn"},
-        sweep={"normal_tasks": ["5-1-3"], "hard_tasks": ["20-1-1"]},
+        accounts=[
+            {
+                "baas": {"repo_dir": str(repo), "config_dir": "cn"},
+                "sweep": {"normal_tasks": ["5-1-3"], "hard_tasks": ["20-1-1"]},
+            }
+        ]
     )
     bridge = BaasBridge(config)
     result = bridge.sync_sweep_from_baas()
@@ -958,7 +986,7 @@ def test_check_baas_update(tmp_path, monkeypatch):
     repo = tmp_path / "baas3"
     repo.mkdir(parents=True)
     (repo / "pyproject.toml").write_text('[project]\nversion = "1.4.2"\n', encoding="utf-8")
-    bridge = BaasBridge(AppConfig(baas={"repo_dir": str(repo)}))
+    bridge = BaasBridge(AppConfig(accounts=[{"baas": {"repo_dir": str(repo)}}]))
 
     fake_releases = [
         {"tag_name": "v1.5.0-beta", "prerelease": True, "draft": False},

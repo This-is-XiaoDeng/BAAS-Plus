@@ -8,6 +8,7 @@
 
 | | |
 |---|---|
+| 👥 多账号支持 | 账号 = 一个模拟器多开实例 + 一套独立配置（任务/扫荡/活动/收件人）；`run` 默认串行执行全部启用账号，失败隔离（一个账号挂不阻塞其余）；WebUI 顶部账号标签切换管理，旧版单账号配置自动迁移 |
 | 🤖 自动启动模拟器 | MuMu / 雷电等，自动获取 ADB 连接 |
 | 🎉 新活动自动推图 | GameKee 数据源检测新活动，剧情/任务/挑战可分别开关；活动模块自动对应（手动配置 > BAAS 记录 > 标题关键词匹配） |
 | 🎯 活动扫荡前先确认进对活动 | 主页轮播图多活动混合轮播时，模板匹配确认当前页=目标活动再进入，避免进错活动；**扫荡前自动推图**（`push_before_sweep`，全推至 SSS）解锁任务后再扫荡 |
@@ -38,7 +39,8 @@ python -m baas_plus.cli webui
 打开 <http://127.0.0.1:18080> 完成配置后：
 
 ```bash
-python -m baas_plus.cli run         # 立即执行一次完整流程
+python -m baas_plus.cli run         # 立即执行（默认全部启用账号，串行）
+python -m baas_plus.cli run --account 小号   # 只执行指定账号（id 或名称）
 python -m baas_plus.cli test-email  # 测试邮件通知
 ```
 
@@ -74,16 +76,19 @@ schtasks /create /tn "BAAS-Plus-Daily" /tr "D:\BAAS\run.bat" /sc daily /st 05:00
    - 起始于：`D:\BAAS`
 4. 完成后双击任务 → 「条件」取消勾选「只有在计算机使用交流电源时才启动此任务」（笔记本必改）；「设置」可设「运行超过 3 小时停止任务」防卡死
 
+> `run` 默认执行**全部启用账号**（每个账号独立模拟器实例，串行执行）；只跑单个账号在「添加参数」里加 `--account <账号名>`。
+
 ## 🖥 WebUI 配置
 
 配置保存在 `data/config.json`，WebUI 中可视化编辑：
 
-- **模拟器**：类型（mumu/雷电/蓝叠等）与多开编号
+- **账号栏**（页面顶部）：账号标签切换（每个账号 = 一个模拟器多开实例 + 一套独立配置）；「＋ 新建账号」复制当前配置（改一下多开实例即可跑新模拟器）；`参与批量执行` 控制 `run` 是否包含该账号
+- **模拟器**：类型（mumu/雷电/蓝叠等）与多开编号（每账号一个）
 - **任务**：勾选要执行的日常任务（咖啡厅、课程表、邮件、竞技场等）
 - **扫荡**：扫荡列表留空时自动从 BAAS 配置（mainlinePriority/hardPriority）读取；保存「模拟器&BAAS」设置后**双向同步**（BAAS-Plus 为空则填充，有配置则写回 BAAS）
 - **活动**：新活动自动推图开关，活动数据源选择；`push_before_sweep`（默认开）在活动扫荡前先推图解锁任务（已 SSS 的关卡快速跳过）
 - **扫荡**：策略（`auto` 按体力算次数 / `fixed` 固定次数）、扫荡列表、活动关卡号
-- **通知**：SMTP 服务器、邮箱账号、授权码、收件人
+- **通知**：SMTP 服务器、邮箱账号、授权码、收件人（全局）；每个账号可单独填「本账号收件人覆盖」
   - 常用服务器：QQ `smtp.qq.com:465`、163 `smtp.163.com:465`、**网易免费企业邮 `smtp.qiye.163.com:465`**
   - 密码填**客户端授权码**（非登录密码）；网易连续认证失败会临时锁定，勿频繁测试
 
@@ -102,15 +107,16 @@ schtasks /create /tn "BAAS-Plus-Daily" /tr "D:\BAAS\run.bat" /sc daily /st 05:00
 
 ```
 baas_plus/
-├── cli.py           # 命令行入口（run / webui / test-email 等）
-├── config.py        # 配置模型与 JSON 读写（data/config.json）
+├── cli.py           # 命令行入口（run / webui / test-email 等，支持 --account）
+├── config.py        # 配置模型与 JSON 读写（多账号 accounts 列表，旧配置自动迁移）
 ├── log_setup.py     # 日志初始化
-├── engine.py        # 核心编排：模拟器 → 活动 → 任务 → 扫荡 → 通知
+├── engine.py        # 核心编排：模拟器 → 活动 → 任务 → 扫荡 → 通知（单账号级）
+├── multi_account.py # 多账号批量编排：串行执行、失败隔离、共享 OCR Main
 ├── activity.py      # GameKee 活动数据源
 ├── baas_bridge.py   # BAAS 集成层（惰性导入，仅 Windows 运行时装 BAAS）
-├── store.py         # SQLite 状态存储（活动去重 + 执行记录）
+├── store.py         # SQLite 状态存储（活动去重 + 执行记录，按账号隔离）
 ├── notifier.py      # 邮件通知
-└── webui/           # FastAPI + 单页前端
+└── webui/           # FastAPI + 单页前端（账号标签管理）
 ```
 
 ## ⚠️ 已知限制

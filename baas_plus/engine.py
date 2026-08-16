@@ -19,11 +19,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .activity import ACTIVITY_MODULE_ALIASES, ActivityFetcher, EventType, GameEvent
 from .baas_bridge import BaasBridge, SWEEP_ITEM_RE, compute_sweep_times
-from .config import AppConfig, SWEEP_TASKS
+from .config import AccountConfig, NotifyConfig, SWEEP_TASKS
 from .notifier import EmailNotifier
 from .store import Store
 
@@ -59,17 +60,29 @@ class RunResult:
 
 
 class Engine:
+    """单个账号的一次执行编排（多账号时每个账号一个 Engine 实例）
+
+    构造接收账号配置（AccountConfig）；store 为全局共享（带 account 维度），
+    notify 为全局通知配置（SMTP 发件），收件人按账号 notify_to_addrs 覆盖。
+    bridge 可注入（多账号串行时由 MultiAccountRunner 传入共享 Main 的实例）。
+    """
+
     def __init__(
         self,
-        config: AppConfig,
+        account: AccountConfig,
+        account_id: str | None = None,
         store: StoreType | None = None,
         bridge: BaasBridge | None = None,
         fetcher: ActivityFetcher | None = None,
+        notify: NotifyConfig | None = None,
+        data_dir: str | None = None,
     ) -> None:
-        self.config = config
-        self.store = store or Store(config.data_path / "baas_plus.db")
-        self.bridge = bridge or BaasBridge(config)
-        self.fetcher = fetcher or ActivityFetcher(config.activity.server)
+        self.config = account
+        self.account_id = account_id or account.id
+        self.notify = notify or NotifyConfig()
+        self.store = store or Store(Path(data_dir or "data") / "baas_plus.db")
+        self.bridge = bridge or BaasBridge(account)
+        self.fetcher = fetcher or ActivityFetcher(account.activity.server)
         self.result = RunResult()
         # arena 与常规任务并发执行时，用锁保证同一时刻仅一个任务操作 BAAS
         self._baas_lock = threading.Lock()
@@ -87,9 +100,9 @@ class Engine:
         now = _now()
         # start_at 缺失（0）视为已开始，避免误杀无开始时间的活动
         active = [e for e in events if e.start_at <= now <= e.end_at]
-        new_events = [e for e in active if not self.store.is_activity_seen(e)]
+        new_events = [e for e in active if not self.store.is_activity_seen(self.account_id, e)]
         for event in active:
-            self.store.mark_activity_seen(event)
+            self.store.mark_activity_seen(self.account_id, event)
         logger.info(
             "活动检测: 共 %d 个事件，进行中 %d 个，新事件 %d 个（未开始/已结束不推送）",
             len(events), len(active), len(new_events),
@@ -143,7 +156,7 @@ class Engine:
                 executed.append(task)
             except Exception as exc:  # noqa: BLE001
                 logger.error("活动推图任务 %s 失败: %s", task, exc)
-        self.store.mark_activity_seen(event, pushed=True)
+        self.store.mark_activity_seen(self.account_id, event, pushed=True)
         return executed
 
     # ---- 扫荡 ----
@@ -301,8 +314,8 @@ class Engine:
         return False
 
     def has_active_activity(self) -> bool:
-        """本地状态中是否存在进行中的活动类事件"""
-        for row in self.store.list_activities(limit=500):
+        """本地状态中是否存在进行中（本账号）的活动类事件"""
+        for row in self.store.list_activities(self.account_id, limit=500):
             if row["event_type"] == EventType.EVENT.value and row["end_at"] >= _now():
                 return True
         return False
@@ -535,7 +548,7 @@ class Engine:
     async def run_once(self) -> RunResult:
         """执行一次完整流程（供 CLI / WebUI 手动触发 / 计划任务调用）"""
         self.result = RunResult()
-        record_id = self.store.add_record("running", "执行开始")
+        record_id = self.store.add_record(self.account_id, "running", "执行开始")
         try:
             # 0. BAAS 更新检查（进程内只查一次，失败静默不阻塞启动）
             if not self._update_checked:
@@ -633,10 +646,16 @@ class Engine:
         return "；".join(parts)
 
     def _notify(self) -> None:
-        if not self.config.notify.enabled:
+        """执行结果邮件通知（全局 SMTP 发件；收件人按账号覆盖，主题带账号名）"""
+        if not self.notify.enabled:
             return
-        notifier = EmailNotifier(self.config.notify.email)
-        subject = f"BAAS-Plus 执行{'成功' if self.result.status != 'failed' else '失败'} ({self.config.baas.server})"
+        to_addrs = self.config.notify_to_addrs or self.notify.email.to_addrs
+        email = self.notify.email.model_copy(update={"to_addrs": to_addrs})
+        notifier = EmailNotifier(email)
+        subject = (
+            f"[{self.config.name}] BAAS-Plus 执行"
+            f"{'成功' if self.result.status != 'failed' else '失败'} ({self.config.baas.server})"
+        )
         body = f"{self.result.summary}\n\n详情:\n"
         body += "\n".join(f"- {t}" for t in self.result.executed_tasks)
         if self.result.swept:

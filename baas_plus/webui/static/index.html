@@ -37,7 +37,8 @@
   .btn.primary { background: var(--accent); color: #fff; }
   .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
   .btn.danger { background: transparent; border: 1px solid var(--err); color: var(--err); }
-  .actions { margin: 16px 0; display: flex; gap: 10px; }
+  .actions { margin: 16px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .actions select { width: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
   th { color: var(--muted); font-weight: 500; }
@@ -51,6 +52,15 @@
   pre { background: #10172a; border: 1px solid var(--border); border-radius: 6px; padding: 10px;
     font-size: 12px; overflow: auto; max-height: 240px; }
   .loading { color: var(--muted); }
+  /* 账号栏 */
+  .account-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; }
+  .acc-tab { background: transparent; border: 1px solid var(--border); color: var(--muted);
+    padding: 6px 14px; border-radius: 16px; cursor: pointer; font-size: 12.5px; }
+  .acc-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .acc-tab.off { opacity: .55; }
+  .acc-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+  .acc-tools input { width: auto; }
 </style>
 </head>
 <body>
@@ -59,10 +69,21 @@
     <a class="gh-link" href="https://github.com/This-is-XiaoDeng/BAAS-Plus" target="_blank" rel="noopener">📦 GitHub ↗</a>
   </div>
 
+  <div class="account-bar">
+    <span style="color:var(--muted);font-size:12.5px;">账号</span>
+    <div id="account_tabs" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+    <div class="acc-tools">
+      <label style="margin:0;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="acc_enabled"> 参与批量执行</label>
+      <button class="btn ghost" onclick="createAccount()">＋ 新建账号</button>
+      <button class="btn ghost" onclick="deleteAccount()" style="color:var(--err);">🗑 删除</button>
+    </div>
+  </div>
+
   <div class="actions">
+    <select id="run_target"></select>
+    <button class="btn danger" onclick="runNow()">▶ 立即执行</button>
     <button class="btn primary" onclick="saveConfig()">💾 保存配置</button>
     <button class="btn ghost" onclick="loadConfig()">↻ 重新加载</button>
-    <button class="btn danger" onclick="runNow()">▶ 立即执行一次</button>
     <button class="btn ghost" onclick="testSimulator()">🖥 测试模拟器</button>
     <button class="btn ghost" onclick="testBaas()">🧪 测试 BAAS</button>
     <button class="btn ghost" onclick="testEmail()">✉ 测试邮件</button>
@@ -71,7 +92,8 @@
 
   <div class="grid">
     <div class="card">
-      <h2>模拟器 & BAAS</h2>
+      <h2>模拟器 & BAAS（当前账号）</h2>
+      <label>账号名称</label><input id="acc_name" placeholder="如：主号 / 小号">
       <div class="row">
         <div><label>模拟器类型</label>
           <select id="sim_type">
@@ -81,7 +103,7 @@
             <option value="bluestacks_nxt">蓝叠 5 国际版</option>
             <option value="bluestacks_nxt_cn">蓝叠 5 中国版</option>
           </select></div>
-        <div><label>多开实例（0 起）</label><input id="sim_instance" type="number" value="0"></div>
+        <div><label>多开实例（0 起，每账号一个）</label><input id="sim_instance" type="number" value="0"></div>
       </div>
       <div class="chk"><label><input type="checkbox" id="sim_auto_restart" checked> 读取体力失败时自动重启模拟器恢复（游戏失联自愈）</label></div>
       <label>BAAS 源码目录（repo_dir，留空用已安装包）</label><input id="baas_repo_dir" placeholder="C:\BAAS">
@@ -111,7 +133,7 @@
           <li>「起始于」填 BAAS 根目录（必须，BAAS 依赖相对路径读 config/）：<br><code id="sched_cwd">D:\BAAS</code></li>
           <li>点「完成」后，在任务列表双击该任务 → 「条件」页：取消勾选「只有在计算机使用交流电源时才启动任务」（笔记本必改），「设置」页可勾选「如果任务运行时间超过以下时间，停止任务」设 3 小时防卡死</li>
         </ol>
-        <p class="hint">说明：<code>run</code> 会执行完整流程（开模拟器 → 活动检测 → 任务 → 扫荡 → 邮件通知）。<br>若 BAAS-Plus 配置不在默认位置，参数改为 <code>-m baas_plus.cli run --config D:\BAAS-Plus\data\config.json</code>。</p>
+        <p class="hint">说明：<code>run</code> 默认执行<strong>全部启用账号</strong>（每个账号独立模拟器实例，串行执行）。<br>只跑单个账号：<code>-m baas_plus.cli run --account &lt;账号名&gt;</code>。若配置不在默认位置，加 <code>--config D:\BAAS-Plus\data\config.json</code>。</p>
       </details>
     </div>
 
@@ -153,7 +175,7 @@
 
     <div class="card">
       <h2>邮件通知</h2>
-      <div class="chk"><label><input type="checkbox" id="notify_enabled"> 启用通知</label></div>
+      <div class="chk"><label><input type="checkbox" id="notify_enabled"> 启用通知（全局）</label></div>
       <div class="row">
         <div><label>SMTP 服务器</label><input id="mail_smtp_host" value="smtp.qq.com"></div>
         <div><label>端口</label><input id="mail_smtp_port" type="number" value="465"></div>
@@ -162,7 +184,8 @@
       <label>邮箱账号</label><input id="mail_username" placeholder="xxx@qq.com">
       <label>SMTP 授权码</label><input id="mail_password" type="password" placeholder="授权码（非登录密码）">
       <label>发件地址（留空用账号）</label><input id="mail_from_addr">
-      <label>收件地址（逗号分隔多个）</label><input id="mail_to_addrs" placeholder="a@qq.com,b@qq.com">
+      <label>收件地址（逗号分隔多个，全局）</label><input id="mail_to_addrs" placeholder="a@qq.com,b@qq.com">
+      <label>本账号收件人覆盖（留空用全局；可填不同收件人）</label><input id="acc_notify_to_addrs" placeholder="留空 = 用全局收件人">
       <p class="hint">常用服务器：QQ邮箱 smtp.qq.com:465 · 163 smtp.163.com:465 · 网易免费企业邮 smtp.qiye.163.com:465（认证用客户端授权码，非登录密码；网易连续认证失败会临时锁定，请勿频繁测试）</p>
     </div>
 
@@ -175,8 +198,8 @@
     <div class="card full">
       <h2>执行记录</h2>
       <table>
-        <thead><tr><th>#</th><th>开始时间</th><th>状态</th><th>摘要</th></tr></thead>
-        <tbody id="record_rows"><tr><td colspan="4" class="loading">加载中…</td></tr></tbody>
+        <thead><tr><th>#</th><th>账号</th><th>开始时间</th><th>状态</th><th>摘要</th></tr></thead>
+        <tbody id="record_rows"><tr><td colspan="5" class="loading">加载中…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -186,6 +209,13 @@
 <script>
 const $ = id => document.getElementById(id);
 let cfg = null;
+let selIdx = 0;  // 当前账号索引
+
+function acc() { return cfg.accounts[selIdx]; }
+function accName(id) {
+  const a = (cfg && cfg.accounts || []).find(x => x.id === id);
+  return a ? a.name : (id || '');
+}
 
 function toast(msg, ok = true) {
   const t = $('toast');
@@ -207,25 +237,62 @@ function fmt(ts) {
 
 async function loadConfig() {
   cfg = await api('/api/config');
-  $('sim_type').value = cfg.simulator.type;
-  $('sim_instance').value = cfg.simulator.instance;
-  $('sim_auto_restart').checked = cfg.simulator.auto_restart_on_failure !== false;  // 兼容旧配置（默认开启）
-  $('baas_repo_dir').value = cfg.baas.repo_dir;
-  await loadConfigDirs(cfg.baas.config_dir);
-  $('baas_server').value = cfg.baas.server;
-  $('baas_game_package').value = cfg.baas.game_package_name || 'com.RoamingStar.BlueArchive';
-  $('baas_current_activity').value = cfg.baas.current_activity;
-  $('baas_banner_region').value = (cfg.baas.banner_region || [1109,133,1280,281]).join(',');
-  $('act_push_story').checked = cfg.activity.push_story_on_new;
-  $('act_push_mission').checked = cfg.activity.push_mission_on_new;
-  $('act_push_challenge').checked = cfg.activity.push_challenge_on_new;
-  $('sweep_strategy').value = cfg.sweep.strategy;
-  $('sweep_fixed_times').value = cfg.sweep.fixed_times;
-  $('sweep_max_times').value = cfg.sweep.max_times;
-  $('sweep_activity_task_number').value = cfg.sweep.activity_task_number;
-  $('sweep_activity_first').checked = cfg.sweep.activity_first;
-  $('sweep_normal_tasks').value = (cfg.sweep.normal_tasks || []).join(',');
-  $('sweep_hard_tasks').value = (cfg.sweep.hard_tasks || []).join(',');
+  renderAccounts();
+  loadForm();
+  await renderTasks();
+  loadRecords();
+  loadActivities();
+}
+
+function renderAccounts() {
+  const bar = $('account_tabs');
+  bar.innerHTML = '';
+  cfg.accounts.forEach((a, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'acc-tab' + (i === selIdx ? ' active' : '') + (a.enabled ? '' : ' off');
+    btn.textContent = (a.enabled ? '● ' : '○ ') + a.name;
+    btn.title = 'id: ' + a.id + (a.enabled ? '' : '（未启用）');
+    btn.onclick = () => { selIdx = i; loadConfig(); };
+    bar.appendChild(btn);
+  });
+  const rt = $('run_target');
+  rt.innerHTML = '';
+  cfg.accounts.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.id; opt.textContent = a.name;
+    if (a.id === acc().id) opt.selected = true;
+    rt.appendChild(opt);
+  });
+  const all = document.createElement('option');
+  all.value = 'all'; all.textContent = '全部启用账号';
+  rt.appendChild(all);
+  $('acc_enabled').checked = acc().enabled;
+}
+
+function loadForm() {
+  const a = acc();
+  $('acc_name').value = a.name;
+  $('sim_type').value = a.simulator.type;
+  $('sim_instance').value = a.simulator.instance;
+  $('sim_auto_restart').checked = a.simulator.auto_restart_on_failure !== false;  // 兼容旧配置（默认开启）
+  $('baas_repo_dir').value = a.baas.repo_dir;
+  loadConfigDirs(a.baas.config_dir);
+  $('baas_server').value = a.baas.server;
+  $('baas_game_package').value = a.baas.game_package_name || 'com.RoamingStar.BlueArchive';
+  $('baas_current_activity').value = a.baas.current_activity;
+  $('baas_banner_region').value = (a.baas.banner_region || [1109,133,1280,281]).join(',');
+  $('act_push_story').checked = a.activity.push_story_on_new;
+  $('act_push_mission').checked = a.activity.push_mission_on_new;
+  $('act_push_challenge').checked = a.activity.push_challenge_on_new;
+  $('sweep_strategy').value = a.sweep.strategy;
+  $('sweep_fixed_times').value = a.sweep.fixed_times;
+  $('sweep_max_times').value = a.sweep.max_times;
+  $('sweep_activity_task_number').value = a.sweep.activity_task_number;
+  $('sweep_activity_first').checked = a.sweep.activity_first;
+  $('sweep_normal_tasks').value = (a.sweep.normal_tasks || []).join(',');
+  $('sweep_hard_tasks').value = (a.sweep.hard_tasks || []).join(',');
+  $('acc_notify_to_addrs').value = (a.notify_to_addrs || []).join(',');
+  // 全局项（不在账号内）
   $('notify_enabled').checked = cfg.notify.enabled;
   $('mail_smtp_host').value = cfg.notify.email.smtp_host;
   $('mail_smtp_port').value = cfg.notify.email.smtp_port;
@@ -234,14 +301,11 @@ async function loadConfig() {
   $('mail_password').value = cfg.notify.email.password;
   $('mail_from_addr').value = cfg.notify.email.from_addr;
   $('mail_to_addrs').value = (cfg.notify.email.to_addrs || []).join(',');
-  await renderTasks();
-  loadRecords();
-  loadActivities();
 }
 
 async function loadConfigDirs(current) {
   let dirs = [];
-  try { dirs = await api('/api/baas-config-dirs'); } catch (e) {}
+  try { dirs = await api('/api/baas-config-dirs?account=' + encodeURIComponent(acc().id)); } catch (e) {}
   if (!dirs.length) dirs = ['cn', 'global', 'jp', 'steam'];
   const sel = $('baas_config_dir');
   sel.innerHTML = '';
@@ -266,7 +330,7 @@ async function renderTasks() {
   tasks.forEach(t => {
     const label = document.createElement('label');
     const cb = document.createElement('input');
-    cb.type = 'checkbox'; cb.value = t.name; cb.checked = (cfg.baas.tasks || []).includes(t.name);
+    cb.type = 'checkbox'; cb.value = t.name; cb.checked = (acc().baas.tasks || []).includes(t.name);
     cb.onchange = () => label.classList.toggle('checked', cb.checked);
     label.appendChild(cb);
     label.appendChild(document.createTextNode(t.label));
@@ -277,7 +341,12 @@ async function renderTasks() {
 
 function collectConfig() {
   const checked = [...$('task_list').querySelectorAll('input:checked')].map(i => i.value);
-  return {
+  const notifyAddrs = $('acc_notify_to_addrs').value.split(',').map(s => s.trim()).filter(Boolean);
+  // 更新当前账号配置（保留 id 与未编辑字段）
+  cfg.accounts[selIdx] = {
+    ...acc(),
+    name: $('acc_name').value.trim() || acc().name,
+    enabled: $('acc_enabled').checked,
     simulator: { type: $('sim_type').value, instance: parseInt($('sim_instance').value) || 0, auto_restart_on_failure: $('sim_auto_restart').checked },
     baas: {
       repo_dir: $('baas_repo_dir').value.trim(),
@@ -304,6 +373,11 @@ function collectConfig() {
       normal_tasks: $('sweep_normal_tasks').value.split(',').map(s => s.trim()).filter(Boolean),
       hard_tasks: $('sweep_hard_tasks').value.split(',').map(s => s.trim()).filter(Boolean),
     },
+    notify_to_addrs: notifyAddrs.length ? notifyAddrs : null,
+  };
+  return {
+    webui: cfg.webui,
+    data_dir: cfg.data_dir,
     notify: {
       enabled: $('notify_enabled').checked,
       email: {
@@ -316,8 +390,7 @@ function collectConfig() {
         to_addrs: $('mail_to_addrs').value.split(',').map(s => s.trim()).filter(Boolean),
       },
     },
-    webui: cfg.webui,
-    data_dir: cfg.data_dir,
+    accounts: cfg.accounts,
   };
 }
 
@@ -334,15 +407,48 @@ async function saveConfig() {
       }
     }
     toast(msg);
+    await loadConfig();  // 账号名/启停可能变化，重载标签栏
   } catch (e) { toast('保存失败: ' + e.message, false); }
 }
 
+async function createAccount() {
+  const name = prompt('新账号名称（留空自动命名；将复制当前账号配置，请修改模拟器实例号）');
+  if (name === null) return;
+  try {
+    const r = await api('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    toast('已新建账号: ' + r.name + '（记得修改「多开实例」并保存）');
+    await loadConfig();
+    selIdx = cfg.accounts.findIndex(a => a.id === r.id);
+    await loadConfig();
+  } catch (e) { toast('新建账号失败: ' + e.message, false); }
+}
+
+async function deleteAccount() {
+  if (cfg.accounts.length <= 1) { toast('至少保留一个账号', false); return; }
+  if (!confirm('确认删除账号「' + acc().name + '」？其历史执行记录会保留在数据库中（不再展示）。')) return;
+  try {
+    await api('/api/accounts/' + encodeURIComponent(acc().id), { method: 'DELETE' });
+    toast('已删除账号');
+    selIdx = 0;
+    await loadConfig();
+  } catch (e) { toast('删除失败: ' + e.message, false); }
+}
+
 async function runNow() {
-  if (!confirm('确认立即执行一次完整流程？（会启动模拟器）')) return;
+  const target = $('run_target').value;
+  const label = target === 'all' ? '全部启用账号' : accName(target);
+  if (!confirm('确认立即执行「' + label + '」？（会启动模拟器）')) return;
   toast('执行中，请稍候…');
   try {
-    const r = await api('/api/run', { method: 'POST' });
-    toast('执行完成: ' + r.summary, r.status !== 'failed');
+    const r = await api('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account: target }) });
+    if (r.results) {
+      // 批量执行：逐账号展示
+      const lines = r.results.map(x => `[${accName(x.account)}] ${x.status}: ${x.summary}`).join('\n');
+      toast('批量执行完成');
+      alert(lines);
+    } else {
+      toast('执行完成: ' + r.summary, r.status !== 'failed');
+    }
     loadRecords();
   } catch (e) { toast('执行失败: ' + e.message, false); }
 }
@@ -361,9 +467,9 @@ function typeLabel(t) {
 
 async function testSimulator() {
   $('test_result').style.display = 'block';
-  $('test_result').textContent = '正在启动模拟器（可能需要几十秒）…';
+  $('test_result').textContent = '正在启动模拟器（当前账号: ' + acc().name + '，可能需要几十秒）…';
   try {
-    const r = await api('/api/test-simulator', { method: 'POST' });
+    const r = await api('/api/test-simulator?account=' + encodeURIComponent(acc().id), { method: 'POST' });
     $('test_result').textContent = '✅ ' + r.message;
     toast('模拟器测试通过');
   } catch (e) { $('test_result').textContent = '❌ ' + e.message; toast('模拟器测试失败', false); }
@@ -371,9 +477,9 @@ async function testSimulator() {
 
 async function testBaas() {
   $('test_result').style.display = 'block';
-  $('test_result').textContent = '正在验证 BAAS（导入 + 配置加载）…';
+  $('test_result').textContent = '正在验证 BAAS（当前账号: ' + acc().name + '，导入 + 配置加载）…';
   try {
-    const r = await api('/api/test-baas', { method: 'POST' });
+    const r = await api('/api/test-baas?account=' + encodeURIComponent(acc().id), { method: 'POST' });
     $('test_result').textContent = `✅ BAAS 检查通过\n版本: ${r.version || '未知'}\n配置目录: ${r.config_dir}\n服务器: ${r.server}`;
     toast('BAAS 测试通过');
   } catch (e) { $('test_result').textContent = '❌ ' + e.message; toast('BAAS 测试失败', false); }
@@ -383,15 +489,15 @@ async function loadRecords() {
   try {
     const rows = await api('/api/records?limit=30');
     $('record_rows').innerHTML = rows.map(r => `
-      <tr><td>${r.id}</td><td>${fmt(r.started_at)}</td>
+      <tr><td>${r.id}</td><td>${accName(r.account)}</td><td>${fmt(r.started_at)}</td>
       <td><span class="tag ${r.status === 'success' ? 'ok' : r.status === 'failed' ? 'err' : 'warn'}">${r.status}</span></td>
       <td title="${(r.detail && JSON.stringify(r.detail) || '').replace(/"/g, '&quot;')}">${r.summary || ''}</td></tr>`).join('');
-  } catch (e) { $('record_rows').innerHTML = `<tr><td colspan="4">加载失败: ${e.message}</td></tr>`; }
+  } catch (e) { $('record_rows').innerHTML = `<tr><td colspan="5">加载失败: ${e.message}</td></tr>`; }
 }
 
 async function loadActivities() {
   try {
-    const data = await api('/api/activities');
+    const data = await api('/api/activities?account=' + encodeURIComponent(acc().id));
     const seen = new Set(data.seen_keys);
     const now = Date.now() / 1000;
     const render = (events, isSweepable) => events.length ? `
@@ -404,7 +510,7 @@ async function loadActivities() {
       </tbody></table>` : '<div class="loading">无</div>';
     const box = $('activity_box');
     box.innerHTML =
-      '<div class="sub">🎯 可扫荡活动（决定「有活动优先扫活动」）</div>' + render(data.current, true) +
+      '<div class="sub">🎯 可扫荡活动（账号: ' + data.account_name + '，决定「有活动优先扫活动」）</div>' + render(data.current, true) +
       '<div class="sub">' + render(data.other, false) + '</div>';
   } catch (e) { $('activity_box').textContent = '加载失败: ' + e.message; }
 }

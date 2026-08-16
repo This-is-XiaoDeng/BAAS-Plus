@@ -20,7 +20,7 @@ import sys
 import time
 from typing import TYPE_CHECKING, Any
 
-from .config import AppConfig, SweepConfig
+from .config import AccountConfig, AppConfig, SweepConfig
 
 logger = logging.getLogger(__name__)
 
@@ -184,12 +184,18 @@ def _align_json_file(path: str, fields: set[str], default: dict, label: str) -> 
 
 
 class BaasBridge:
-    """BAAS 操作封装（模拟器生命周期 + 任务执行 + 配置改写）"""
+    """BAAS 操作封装（模拟器生命周期 + 任务执行 + 配置改写）
 
-    def __init__(self, config: AppConfig) -> None:
+    config 接收 AccountConfig（推荐）或 AppConfig（兼容：内部字段路径一致）。
+    main 可注入共享的 BAAS Main（OCR 服务器进程）：多账号串行执行时复用
+    同一个 Main，避免每个账号重复拉起 OCR 服务器进程（create_baas 仅在
+    _main 为 None 时新建）。
+    """
+
+    def __init__(self, config: AppConfig | AccountConfig, main: Any | None = None) -> None:
         self.config = config
+        self._main = main
         self.baas_thread: Baas_thread | None = None
-        self._main = None
         self._started = False
 
     # ---- 模拟器 ----
