@@ -360,7 +360,13 @@ class Engine:
                 keywords = self._banner_keywords(title) if title else []
 
                 async def _enter_and_run(task: str) -> bool:
-                    """等轮播图 → 点击 enter1 进入活动菜单 → 屏蔽 to_main_page 执行任务"""
+                    """确保在主界面 → 等轮播图 → 点击 enter1 进入活动菜单 → 屏蔽 to_main_page 执行任务
+
+                    轮播图区域（banner_region）只在主界面存在：扫描前先回主界面，
+                    否则上一任务遗留的页面（活动菜单/任务列表等）会让模板/OCR
+                    读到错误内容，甚至 enter1 固定坐标点击落在无关按钮上。
+                    """
+                    self.bridge.go_main_page()
                     if not await self._wait_for_activity_banner(keywords, module=module):
                         logger.warning("轮播图未就绪，跳过「%s」", task)
                         return False
@@ -374,16 +380,13 @@ class Engine:
                     self.bridge.solve(task)
                     return True
 
-                pushed_ok = True
                 if self.config.activity.push_before_sweep:
                     # 先推图（打通任务至全 SSS；已 SSS 的关卡快速跳过）：
                     # BAAS 定位任务靠按钮模板匹配，未解锁任务的按钮样式不匹配，
-                    # 不推图直接扫荡会定位失败（swipe_search_target_str 返回 None）
+                    # 不推图直接扫荡会定位失败（swipe_search_target_str 返回 None）；
+                    # 推图后页面停在活动内，下一次 _enter_and_run 会先回主界面
                     logger.info("活动扫荡前先推图: %s", title)
-                    pushed_ok = await _enter_and_run("explore_activity_mission")
-                    if pushed_ok:
-                        # 推图后页面停在活动内，回主页重新等轮播图再进扫荡
-                        self.bridge.go_main_page()
+                    await _enter_and_run("explore_activity_mission")
 
                 if not await _enter_and_run("activity_sweep"):
                     logger.warning("活动扫荡未执行「%s」", title)
@@ -392,6 +395,10 @@ class Engine:
                         f"activity:{self.config.sweep.activity_task_number}(auto,{module})"
                     )
                     ap = self.bridge.get_ap()
+                    # solve_activity_sweep_after_enter 屏蔽了 to_main_page，
+                    # 扫荡结束后 BA 停在扫荡结果页而非主界面；若这是本轮最后的
+                    # 扫荡，显式回主界面，避免整轮结束后游戏停留在非主界面
+                    self.bridge.go_main_page()
             else:
                 logger.warning(
                     "活动优先已开启，但无法确定进行中活动的 BAAS 模块，跳过活动扫荡"

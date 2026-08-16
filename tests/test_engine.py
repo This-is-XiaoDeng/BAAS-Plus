@@ -524,6 +524,65 @@ async def test_banner_template_miss_falls_back_to_ocr(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_activity_sweep_ensures_and_restores_main_page(tmp_path):
+    """活动扫荡的轮播图导航：扫描前先确保 BA 在主界面，扫荡结束后再回到主界面
+
+    回归：轮播图区域（banner_region）只在主界面存在，若扫描轮播图时 BA 不在
+    主界面（如上一任务遗留的活动菜单/任务列表页面），模板/OCR 会读到错误内容，
+    enter1 固定坐标点击也可能落在无关按钮上；且活动扫荡屏蔽了 to_main_page
+    （solve_activity_sweep_after_enter），扫荡结束后需显式回主界面。
+    """
+    now = int(time.time())
+    running = GameEvent(
+        id=51, title="复刻活动【笑笑闹闹 走走绕绕】", start_at=now - 3600,
+        end_at=now + 86400, event_type=EventType.EVENT,
+    )
+
+    class BannerOrderBridge(FakeBridge):
+        """记录 go_main_page / 轮播图扫描的先后顺序（solves 只记操作不记扫描）"""
+
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.order: list[str] = []
+
+        def go_main_page(self):
+            self.order.append("go_main_page")
+            return super().go_main_page()
+
+        def match_banner_activity(self, candidates):
+            self.order.append("match_banner_activity")
+            return super().match_banner_activity(candidates)
+
+        def ocr_banner(self):
+            self.order.append("ocr_banner")
+            return super().ocr_banner()
+
+    bridge = BannerOrderBridge(ap=500)
+    bridge.activity_modules = ["LivelyandBusily"]
+    bridge.banner_module = False  # 模板不命中 → 走 OCR 轮询，验证扫描发生在回主界面之后
+    bridge.banner_text = "笑笑闹闹 走走绕绕"
+    engine = make_engine(
+        bridge,
+        events=[running],
+        data_dir=str(tmp_path),
+        baas={"tasks": [], "current_activity": ""},
+        activity={"push_before_sweep": False},  # 只走活动扫荡一条路径，顺序确定
+    )
+    await engine.run_once()
+    # 扫描轮播图前先回主界面：首次 go_main_page 先于首次模板匹配 / OCR 扫描
+    assert bridge.order[0] == "go_main_page"
+    assert bridge.order.index("go_main_page") < bridge.order.index("match_banner_activity")
+    assert bridge.order.index("go_main_page") < bridge.order.index("ocr_banner")
+    # 扫荡结束后回到主界面：末次 go_main_page 在 activity_sweep 之后
+    first, last = {}, {}
+    for i, s in enumerate(bridge.solves):
+        first.setdefault(s, i)
+        last[s] = i
+    assert first["go_main_page"] < first["enter_current_activity"]
+    assert last["go_main_page"] > last["activity_sweep"]
+
+
+@pytest.mark.asyncio
 async def test_banner_fuzzy_match_tolerates_ocr_errors(tmp_path):
     """OCR 错字时仍能模糊匹配（如「笑笑闹闹」被识别成「笑笑同闹」）"""
     assert Engine._fuzzy_contains("距离结束还剩5天 笑笑闹闹 走走绕绕", "笑笑闹闹")
