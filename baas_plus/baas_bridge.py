@@ -319,8 +319,18 @@ class BaasBridge:
         if self.baas_thread is None:
             raise RuntimeError("Baas_thread 未初始化，请先调用 create_baas()")
         logger.info("执行 BAAS 任务: %s", task)
-        result = self.baas_thread.solve(task)
-        self._last_next_time = getattr(self.baas_thread, "next_time", 0) or 0
+        baas = self.baas_thread
+        # 对齐 BAAS 官方调度器（Baas_thread.thread_starter）语义：current_task 执行前
+        # 把 next_time 重置为 0，任务内按需再设置。直接调 solve() 会绕过该重置，
+        # 导致 next_time 残留上一场遗留的冷却值：arena 最后一票（票数==1）打完只
+        # 领奖励、不归零 next_time，引擎会误判「还有票」而派发不存在的第 6 场
+        # （白等一个冷却周期）。重置后 last_next_time<=0 即表示票已用完。
+        if hasattr(baas, "next_time"):
+            baas.next_time = 0
+        try:
+            result = baas.solve(task)
+        finally:
+            self._last_next_time = getattr(baas, "next_time", 0) or 0
         return result
 
     @property

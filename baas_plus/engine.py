@@ -457,11 +457,15 @@ class Engine:
                 self.result.status = "partial"
 
     async def _run_arena(self) -> None:
-        """战术对抗赛：最多 6 场；冷却等待期间让出事件循环，常规任务穿插执行
+        """战术对抗赛：自动重复到票用完；冷却等待期间让出事件循环，常规任务穿插执行
 
-        BAAS arena 模块：票数 >1 时打一场后设置 next_time（默认 55s 冷却）；
-        最后一票打完后 next_time 归 0。这里模拟调度器的"冷却→再派发"，
-        用 asyncio.sleep 而非 time.sleep，等待期间其他协程（常规任务）可运行。
+        竞技场每天固定 5 张挑战券（最多 5 场，不存在第 6 场）。BAAS arena 模块：
+        票数 >1 时打一场后设置 next_time（默认 55s 冷却）；最后一票打完只领奖励、
+        不设置 next_time。baas_bridge.solve 每次执行前会把 next_time 重置为 0
+        （对齐 BAAS 官方调度器语义），因此 last_next_time<=0 即表示票已用完、
+        循环终止。range(6) 仅是防御性上限，正常流程在 5 场后由 next_time 归零结束。
+        这里模拟调度器的"冷却→再派发"，用 asyncio.sleep 而非 time.sleep，
+        等待期间其他协程（常规任务）可运行。
         """
         for i in range(6):
             try:

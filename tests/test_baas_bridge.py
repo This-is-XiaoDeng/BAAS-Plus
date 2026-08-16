@@ -31,6 +31,8 @@ class FakeBaasThread:
         self.server = "CN"
         self.activity_name = None
         self.u2 = FakeU2()
+        # 真实 Baas_thread.__init__ 会初始化 next_time=0（BAAS 调度器用）
+        self.next_time = 0
 
     def set_ocr(self, ocr):
         self.calls.append("set_ocr")
@@ -285,3 +287,38 @@ def test_restart_simulator_returns_false_on_failure(bridge):
 
     bridge.start_simulator = _start
     assert bridge.restart_simulator() is False
+
+
+def test_solve_resets_next_time_before_task(bridge, monkeypatch):
+    """solve() 前重置 next_time（对齐 BAAS 官方调度器），任务内按需再设置"""
+    bridge.create_baas()
+    seen = {}
+
+    def fake_solve(task):
+        # BAAS 视角：current_task 执行时 next_time 应为 0
+        seen["before"] = bridge.baas_thread.next_time
+        bridge.baas_thread.next_time = 55  # arena 票数>1：打一场后设置冷却
+        return True
+
+    monkeypatch.setattr(bridge.baas_thread, "solve", fake_solve)
+    bridge.solve("arena")
+    assert seen["before"] == 0
+    assert bridge.last_next_time == 55
+
+
+def test_solve_does_not_leak_stale_next_time(bridge, monkeypatch):
+    """arena 最后一票打完不设置 next_time：不应残留上一场遗留的 55s（第 6 场回归）
+
+    竞技场每天固定 5 张挑战券，不存在第 6 场。旧实现直接调 baas_thread.solve()
+    绕过 BAAS 调度器的 next_time 重置，导致最后一场打完 next_time 仍为 55，
+    引擎误判「还有票」而白等一个冷却周期并派发第 6 场。
+    """
+    bridge.create_baas()
+    bridge.baas_thread.next_time = 55  # 上一场遗留的陈旧冷却值
+
+    def fake_solve(task):
+        return True  # 最后一票：只领奖励返回，不触碰 next_time
+
+    monkeypatch.setattr(bridge.baas_thread, "solve", fake_solve)
+    bridge.solve("arena")
+    assert bridge.last_next_time == 0
