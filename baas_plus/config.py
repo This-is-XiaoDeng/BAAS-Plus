@@ -80,6 +80,9 @@ class SimulatorConfig(BaseModel):
 
     type: str = "mumu"  # mumu / mumu_global / leidian / bluestacks_nxt / ...
     instance: int = 0  # 多开编号，从 0 开始
+    # 读取体力失败（截图帧为空，通常意味着模拟器/游戏失联）时，自动重启一次模拟器
+    # 并重新启动游戏后重试；仍失败则跳过扫荡，不中断整个执行
+    auto_restart_on_failure: bool = True
 
 
 class BaasConfig(BaseModel):

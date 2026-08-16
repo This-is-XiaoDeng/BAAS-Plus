@@ -83,6 +83,7 @@
           </select></div>
         <div><label>多开实例（0 起）</label><input id="sim_instance" type="number" value="0"></div>
       </div>
+      <div class="chk"><label><input type="checkbox" id="sim_auto_restart" checked> 读取体力失败时自动重启模拟器恢复（游戏失联自愈）</label></div>
       <label>BAAS 源码目录（repo_dir，留空用已安装包）</label><input id="baas_repo_dir" placeholder="C:\BAAS">
       <label>BAAS 配置目录名（config/ 下子目录）</label><select id="baas_config_dir"></select>
       <label>服务器</label>
@@ -208,6 +209,7 @@ async function loadConfig() {
   cfg = await api('/api/config');
   $('sim_type').value = cfg.simulator.type;
   $('sim_instance').value = cfg.simulator.instance;
+  $('sim_auto_restart').checked = cfg.simulator.auto_restart_on_failure !== false;  // 兼容旧配置（默认开启）
   $('baas_repo_dir').value = cfg.baas.repo_dir;
   await loadConfigDirs(cfg.baas.config_dir);
   $('baas_server').value = cfg.baas.server;
@@ -276,7 +278,7 @@ async function renderTasks() {
 function collectConfig() {
   const checked = [...$('task_list').querySelectorAll('input:checked')].map(i => i.value);
   return {
-    simulator: { type: $('sim_type').value, instance: parseInt($('sim_instance').value) || 0 },
+    simulator: { type: $('sim_type').value, instance: parseInt($('sim_instance').value) || 0, auto_restart_on_failure: $('sim_auto_restart').checked },
     baas: {
       repo_dir: $('baas_repo_dir').value.trim(),
       config_dir: $('baas_config_dir').value.trim() || 'default',

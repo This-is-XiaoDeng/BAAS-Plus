@@ -52,6 +52,10 @@ class FakeBridge:
     def get_ap(self):
         return self.ap
 
+    def restart_simulator(self):
+        self.restarts = getattr(self, "restarts", 0) + 1
+        return True
+
     def get_baas_sweep_config(self):
         return self.baas_sweep_config
 
@@ -619,6 +623,72 @@ async def test_arena_interleaves_with_regular_tasks(tmp_path, monkeypatch):
         assert t in result.executed_tasks
     # 锁串行化：任一时刻最多一个任务正在执行（solve 记录顺序无并发交叉）
     assert bridge.solves.count("arena") + bridge.solves.count("cafe_reward") + bridge.solves.count("lesson") == 4
+
+
+@pytest.mark.asyncio
+async def test_sweep_restarts_simulator_when_ap_read_fails(tmp_path):
+    """体力读取失败（游戏/模拟器失联）→ 自动重启一次模拟器后重试成功"""
+    class ApFailOnceBridge(FakeBridge):
+        def __init__(self):
+            super().__init__(ap=120)
+            self.ap_calls = 0
+
+        def get_ap(self):
+            self.ap_calls += 1
+            return -1 if self.ap_calls == 1 else 120
+
+    bridge = ApFailOnceBridge()
+    engine = make_engine(
+        bridge, events=[], data_dir=str(tmp_path),
+        sweep={"normal_tasks": ["15-1-99"], "activity_first": False},
+    )
+    swept = await engine.run_sweep()
+    assert bridge.restarts == 1  # 重启恰好一次
+    assert bridge.ap_calls == 2  # 重启后再读一次
+    assert swept == ["15-1-12"]  # 120 体力按 auto 重算
+    assert engine.result.ap_before_sweep == 120
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_when_simulator_restart_fails(tmp_path):
+    """重启模拟器失败 → 跳过扫荡（不抛异常、不崩溃）"""
+    class ApFailBridge(FakeBridge):
+        def get_ap(self):
+            return -1
+
+        def restart_simulator(self):
+            self.restarts = getattr(self, "restarts", 0) + 1
+            return False
+
+    bridge = ApFailBridge()
+    engine = make_engine(
+        bridge, events=[], data_dir=str(tmp_path),
+        sweep={"normal_tasks": ["15-1-99"]},
+    )
+    swept = await engine.run_sweep()
+    assert swept == []
+    assert engine.result.ap_before_sweep == -1
+    assert bridge.restarts == 1
+    assert "normal_task" not in bridge.solves
+
+
+@pytest.mark.asyncio
+async def test_sweep_no_restart_when_disabled(tmp_path):
+    """auto_restart_on_failure=False 时不重启模拟器，直接跳过扫荡"""
+    class ApFailBridge(FakeBridge):
+        def get_ap(self):
+            return -1
+
+    bridge = ApFailBridge()
+    engine = make_engine(
+        bridge, events=[], data_dir=str(tmp_path),
+        sweep={"normal_tasks": ["15-1-99"]},
+        simulator={"auto_restart_on_failure": False},
+    )
+    swept = await engine.run_sweep()
+    assert swept == []
+    assert engine.result.ap_before_sweep == -1
+    assert not getattr(bridge, "restarts", 0)
 
 
 @pytest.mark.asyncio

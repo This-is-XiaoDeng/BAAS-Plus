@@ -246,6 +246,35 @@ class BaasBridge:
                 waited += 3
         raise RuntimeError(f"等待模拟器就绪超时（{timeout}s）：{adb_address}，请确认模拟器已安装且可启动")
 
+    def restart_simulator(self) -> bool:
+        """完整重启模拟器并恢复到游戏主界面（模拟器/游戏失联时的自动恢复）
+
+        顺序：停 BAAS 线程 → 关闭模拟器 → 重新启动并等待 ADB 就绪 → 重新初始化
+        BAAS（复用已启动的 OCR 服务器）→ 重新启动游戏进入主界面。任一步失败
+        返回 False，由调用方决定跳过扫荡继续执行，而不是崩溃。
+
+        注意：重启前通过 BAAS config.json 持久化的设置（扫荡列表 / 活动模块等）
+        会在重新加载 ConfigSet 后保留。
+        """
+        logger.warning("检测到模拟器/游戏失联，尝试重启模拟器恢复...")
+        try:
+            self.stop()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("停止 BAAS/关闭模拟器异常（继续重启流程）: %s", exc)
+        try:
+            adb = self.start_simulator()
+            self.create_baas(adb)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("重启模拟器失败: %s", exc)
+            return False
+        try:
+            self.launch_game()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("模拟器重启后启动游戏失败: %s", exc)
+            return False
+        logger.info("模拟器重启完成，游戏已回到主界面")
+        return True
+
     # ---- BAAS 线程 ----
 
     def create_baas(self, adb_address: str | None = None) -> Baas_thread:
@@ -253,10 +282,14 @@ class BaasBridge:
         Baas_thread, ConfigSet, Main = import_baas(self.config.baas.repo_dir)
         repair_user_config(self.config.baas.config_dir)
 
-        # 无 GUI 模式初始化 OCR（对齐 BAAS 1.4.x OCR 语言：en-us 数字/英文 + zh-cn 中文）
-        logger.info("初始化 BAAS Main（启动 OCR 服务器，首次可能较慢）...")
-        self._main = Main(ocr_needed=["en-us", "zh-cn"])
-        logger.info("BAAS Main 初始化完成")
+        # 无 GUI 模式初始化 OCR（对齐 BAAS 1.4.x OCR 语言：en-us 数字/英文 + zh-cn 中文）。
+        # OCR 服务器是独立进程，重启模拟器（restart_simulator）会再次走到这里，
+        # 复用已启动的 Main 避免重复拉起 OCR 服务器进程（BAAS 客户端每次会找空闲端口，
+        # 重复创建虽不冲突但会泄漏进程）
+        if self._main is None:
+            logger.info("初始化 BAAS Main（启动 OCR 服务器，首次可能较慢）...")
+            self._main = Main(ocr_needed=["en-us", "zh-cn"])
+            logger.info("BAAS Main 初始化完成")
         # BAAS 的 Main 构造可能重置 root logger 的 handlers（BAAS 自带日志配置），
         # 重新确保 baas_plus 独立命名空间的 FileHandler 仍在，避免后续日志丢失
         from .log_setup import setup_logging
@@ -296,10 +329,43 @@ class BaasBridge:
         return getattr(self, "_last_next_time", 0)
 
     def get_ap(self) -> int:
-        """读取当前体力（-1 表示读取失败）"""
+        """读取当前体力（-1 表示读取失败）
+
+        BAAS 的 get_ap() 用缓存帧 latest_img_array 做 OCR，**不会主动刷新截图**；
+        任务结束后若最后一次截图失败（帧为 None），BAAS OCR 会抛
+        TypeError: 'NoneType' object is not subscriptable，把整个执行拖垮
+        （现象：所有任务完成后 run_sweep 阶段崩溃）。
+        这里沿用 match_banner_activity / ocr_banner 的模式：先
+        update_screenshot_array() 刷新截图帧，无有效帧或 OCR 异常时重试，
+        最终仍失败返回 -1，让引擎跳过扫荡而不是抛异常终止。
+        """
         if self.baas_thread is None:
             raise RuntimeError("Baas_thread 未初始化")
-        return self.baas_thread.get_ap(True)
+        baas = self.baas_thread
+        for attempt in range(3):
+            update = getattr(baas, "update_screenshot_array", None)
+            if callable(update):
+                try:
+                    update()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("读取体力前刷新截图失败（第 %d 次）: %s", attempt + 1, exc)
+                    if attempt < 2:
+                        time.sleep(1)
+                    continue
+            img = getattr(baas, "latest_img_array", None)
+            if img is None:
+                logger.warning("读取体力失败：截图帧为空（第 %d 次），重试...", attempt + 1)
+                if attempt < 2:
+                    time.sleep(1)
+                continue
+            try:
+                return baas.get_ap(True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("读取体力 OCR 失败（第 %d 次）: %s", attempt + 1, exc)
+                if attempt < 2:
+                    time.sleep(1)
+        logger.warning("读取体力失败：多次刷新截图均无有效帧，跳过扫荡")
+        return -1
 
     # ---- 配置读取 ----
 

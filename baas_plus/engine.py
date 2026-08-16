@@ -335,6 +335,12 @@ class Engine:
         """
         swept: list[str] = []
         ap = self.bridge.get_ap()
+        if ap <= 0:
+            # 读取体力失败：截图帧为空通常意味着模拟器/游戏失联（任务期间游戏闪退
+            # 或模拟器无响应）。配置允许时重启一次模拟器再重试；仍失败则跳过扫荡，
+            # 不中断后续的奖励领取/通知流程
+            if self.config.simulator.auto_restart_on_failure:
+                ap = await self._recover_ap()
         self.result.ap_before_sweep = ap
         if ap <= 0:
             logger.warning("读取体力失败或体力为 0，跳过扫荡")
@@ -415,6 +421,25 @@ class Engine:
             self.bridge.solve("hard_task")
             swept.extend(hard)
         return swept
+
+    async def _recover_ap(self) -> int:
+        """体力读取失败（模拟器/游戏失联）时：重启一次模拟器后重试读取
+
+        重启模拟器 + 重新初始化 BAAS + 重启游戏约需 1-3 分钟，放后台线程执行
+        避免阻塞事件循环。返回重试后的体力；重启失败或仍读取失败返回 -1。
+        """
+        logger.warning("读取体力失败，自动重启模拟器后重试（约需 1-3 分钟）...")
+        try:
+            ok = await asyncio.to_thread(self.bridge.restart_simulator)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("重启模拟器异常: %s", exc)
+            return -1
+        if not ok:
+            logger.warning("模拟器重启失败，跳过扫荡")
+            return -1
+        ap = self.bridge.get_ap()
+        logger.info("模拟器重启后读取体力: %s", ap)
+        return ap
 
     def _solve_locked(self, task: str) -> None:
         """带锁执行 BAAS 任务：同一时刻仅一个任务在跑（arena 与常规任务共享锁）"""

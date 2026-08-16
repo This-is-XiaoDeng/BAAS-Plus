@@ -168,3 +168,120 @@ def test_match_banner_activity_no_screenshot(bridge):
     """无截图帧时返回 None（不崩溃）"""
     bridge.baas_thread = FakeBaasThreadWithImg(None)
     assert bridge.match_banner_activity(["LivelyandBusily"]) is None
+
+
+class FakeBaasThreadForAp:
+    """带可配置截图帧序列的假 Baas_thread（供 get_ap 测试）
+
+    frames 中的每个元素依次成为一次 update_screenshot_array() 后的
+    latest_img_array（用尽后保持最后一次的值）。
+    """
+
+    def __init__(self, frames, ap_result=120):
+        self._frames = list(frames)
+        self.latest_img_array = None
+        self.ratio = 1.0
+        self.ap_result = ap_result
+        self.refreshes = 0
+        self.get_ap_calls = 0
+
+    def update_screenshot_array(self):
+        self.refreshes += 1
+        if self._frames:
+            self.latest_img_array = self._frames.pop(0)
+
+    def get_ap(self, is_main_page=False):
+        self.get_ap_calls += 1
+        return self.ap_result
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    """禁用重试等待，避免测试慢 2 秒"""
+    monkeypatch.setattr("baas_plus.baas_bridge.time.sleep", lambda s: None)
+
+
+def test_get_ap_refreshes_screenshot_before_ocr(bridge, no_sleep):
+    """get_ap 必须先刷新截图帧再 OCR（latest_img_array 空帧回归）"""
+    baas = FakeBaasThreadForAp(frames=[object()])
+    bridge.baas_thread = baas
+    assert bridge.get_ap() == 120
+    assert baas.refreshes == 1
+    assert baas.get_ap_calls == 1
+
+
+def test_get_ap_returns_minus_one_when_no_frame(bridge, no_sleep):
+    """截图帧一直为空 → 返回 -1（引擎跳过扫荡），而不是抛 TypeError"""
+    baas = FakeBaasThreadForAp(frames=[None, None, None])
+    bridge.baas_thread = baas
+    assert bridge.get_ap() == -1
+    assert baas.get_ap_calls == 0  # 无有效帧时绝不调用 BAAS OCR
+
+
+def test_get_ap_recovers_when_screenshot_returns(bridge, no_sleep):
+    """前两次截图失败、第三次恢复 → 返回体力值（重试生效）"""
+    baas = FakeBaasThreadForAp(frames=[None, None, object()])
+    bridge.baas_thread = baas
+    assert bridge.get_ap() == 120
+    assert baas.refreshes == 3
+    assert baas.get_ap_calls == 1
+
+
+def test_get_ap_returns_minus_one_when_ocr_raises(bridge, no_sleep):
+    """BAAS get_ap 内部 OCR 异常（NoneType 下标等）→ 返回 -1，不向上抛"""
+    baas = FakeBaasThreadForAp(frames=[object()] * 3)
+
+    def failing_get_ap(is_main_page=False):
+        raise TypeError("'NoneType' object is not subscriptable")
+
+    baas.get_ap = failing_get_ap
+    bridge.baas_thread = baas
+    assert bridge.get_ap() == -1
+
+
+def test_restart_simulator_sequence(bridge):
+    """重启模拟器：停 → 启 → 初始化 BAAS → 启动游戏，按序执行并返回 True"""
+    calls: list[str] = []
+
+    def _stop():
+        calls.append("stop")
+
+    def _start():
+        calls.append("start")
+        return "127.0.0.1:16384"
+
+    def _create(adb):
+        calls.append(f"create:{adb}")
+
+    def _launch():
+        calls.append("launch")
+
+    bridge.stop = _stop
+    bridge.start_simulator = _start
+    bridge.create_baas = _create
+    bridge.launch_game = _launch
+    assert bridge.restart_simulator() is True
+    assert calls == ["stop", "start", "create:127.0.0.1:16384", "launch"]
+
+
+def test_restart_simulator_recovers_when_stop_raises(bridge):
+    """stop 异常不应阻断重启流程（继续启动模拟器）"""
+    def _stop():
+        raise RuntimeError("stop 失败")
+
+    bridge.stop = _stop
+    bridge.start_simulator = lambda: "127.0.0.1:16384"
+    bridge.create_baas = lambda adb: None
+    bridge.launch_game = lambda: None
+    assert bridge.restart_simulator() is True
+
+
+def test_restart_simulator_returns_false_on_failure(bridge):
+    """重启中途失败（模拟器启动失败）→ 返回 False，不抛异常"""
+    bridge.stop = lambda: None
+
+    def _start():
+        raise RuntimeError("模拟器启动失败")
+
+    bridge.start_simulator = _start
+    assert bridge.restart_simulator() is False
