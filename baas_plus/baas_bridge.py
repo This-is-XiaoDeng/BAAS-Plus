@@ -288,6 +288,18 @@ class BaasBridge:
 
     # ---- BAAS 线程 ----
 
+    @staticmethod
+    def _parse_adb_address(adb_address: str) -> tuple[str, str]:
+        """解析 ADB 地址（如 127.0.0.1:16384）为 (ip, port)
+
+        无端口时（仅 IP 的 USB 串口形式）返回 (地址, 空串)，由调用方自行处理。
+        """
+        if ":" in adb_address:
+            ip, port = adb_address.rsplit(":", 1)
+            if ip and port:
+                return ip, port
+        return adb_address, ""
+
     def create_baas(self, adb_address: str | None = None) -> Baas_thread:
         """初始化 Baas_thread（OCR + 配置加载；首次较慢）"""
         Baas_thread, ConfigSet, Main = import_baas(self.config.baas.repo_dir)
@@ -309,6 +321,21 @@ class BaasBridge:
 
         config_set = ConfigSet(config_dir=self.config.baas.config_dir)
         logger.info("ConfigSet 加载完成: config_dir=%s", self.config.baas.config_dir)
+        # 用 BAAS-Plus 实际发现的 ADB 端口覆写 BAAS config 的 adbIP/adbPort（若提供）。
+        # 必须在 init_all_data 之前写入：BAAS 的 init_device → Connection 在构造时读
+        # config.adbIP/adbPort 建立设备连接，晚于这个时机设置的端口不会生效（旧实现
+        # 在 init_all_data 之后调 set_adb_address，而 BAAS master 根本没有该方法，
+        # 变成了空操作，导致 BAAS 仍按 config 里（可能是错的/过期的）端口连接）。
+        # set() 走 ConfigSet 内存态，Connection 读 self.config（data 字典）也能读到。
+        if adb_address:
+            ip, port = self._parse_adb_address(adb_address)
+            if port:
+                config_set.set("adbIP", ip)
+                config_set.set("adbPort", port)
+                logger.info(
+                    "已用发现的 ADB 端口覆写 BAAS 配置: %s:%s（原配置 adbIP=%r adbPort=%r）",
+                    ip, port, config_set.get("adbIP"), config_set.get("adbPort"),
+                )
         baas = Baas_thread(config_set, None, None, None)
         # 必须先 set_ocr 再 init_all_data：set_ocr 会设置 ocr_img_pass_method
         # （本地 OCR=0 共享内存/远程=1）与 shared_memory_name，init_all_data →
@@ -319,8 +346,6 @@ class BaasBridge:
         logger.info("开始 Baas_thread.init_all_data（设备连接/分辨率/资源加载）...")
         baas.init_all_data()
         logger.info("Baas_thread.init_all_data 完成")
-        if adb_address:
-            baas.set_adb_address(adb_address) if hasattr(baas, "set_adb_address") else None
         self.baas_thread = baas
         self.apply_game_package()
         return baas

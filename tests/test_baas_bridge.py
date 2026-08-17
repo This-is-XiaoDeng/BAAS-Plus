@@ -63,9 +63,15 @@ def fake_import_baas(repo_dir):
 
         def __init__(self, config_dir=None):
             self.config_dir = config_dir
+            self._data = {}
 
         def get(self, key, default=None):
-            return "官服" if key == "server" else default
+            if key == "server":
+                return "官服"
+            return self._data.get(key, default)
+
+        def set(self, key, value):
+            self._data[key] = value
 
     return FakeBaasThread, FakeConfigSet, FakeMain
 
@@ -84,6 +90,37 @@ def test_create_baas_sets_ocr_before_init(bridge):
     baas = bridge.create_baas("127.0.0.1:16384")
     assert baas.calls.index("set_ocr") < baas.calls.index("init_all_data")
     assert baas.ocr is not None
+
+
+def test_create_baas_uses_adb_address_from_arg(bridge):
+    """发现到 adb 地址时，必须在 init_all_data（设备连接）之前写入 BAAS config
+
+    回归：旧实现把 set_adb_address 放在 init_all_data 之后（且 BAAS master 根本没
+    这个方法，是空操作），导致 BAAS 仍按 config 里的旧端口连接。
+    现在应在 init 前把 adbIP/adbPort 写进 ConfigSet，让 Connection 建连时用对端口。
+    """
+    baas = bridge.create_baas("127.0.0.1:16600")
+    assert baas.config_set.get("adbIP") == "127.0.0.1"
+    assert baas.config_set.get("adbPort") == "16600"
+    # 覆写发生在 init_all_data（连接建立）之前
+    assert baas.calls.index("set_ocr") < baas.calls.index("init_all_data")
+
+
+def test_create_baas_no_adb_keeps_config(bridge):
+    """不带 adb 地址时不覆写 config（保持原有 adbIP/adbPort）"""
+    bridge.create_baas()
+    assert bridge.baas_thread.config_set.get("adbIP") is None
+    assert bridge.baas_thread.config_set.get("adbPort") is None
+
+
+def test_parse_adb_address_with_port():
+    ip, port = BaasBridge._parse_adb_address("127.0.0.1:16384")
+    assert (ip, port) == ("127.0.0.1", "16384")
+
+
+def test_parse_adb_address_without_port():
+    ip, port = BaasBridge._parse_adb_address("emulator-5554")
+    assert (ip, port) == ("emulator-5554", "")
 
 
 def test_create_baas_apply_game_package(bridge):
