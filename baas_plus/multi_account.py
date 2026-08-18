@@ -165,6 +165,10 @@ class MultiAccountRunner:
                 lines.append(f"任务: {', '.join(result.executed_tasks)}")
             if result.swept:
                 lines.append(f"扫荡: {', '.join(result.swept)}")
+            if result.warnings:
+                lines.append(f"⚠ 警告:")
+                for w in result.warnings:
+                    lines.append(f"  - {w}")
             lines.append("")
 
         # 最终剩余体力（取最后一个成功执行的账号的体力）

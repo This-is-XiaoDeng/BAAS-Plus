@@ -795,6 +795,46 @@ async def test_arena_interleaves_with_regular_tasks(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_arena_fallback_failure_records_warning(tmp_path, monkeypatch):
+    """arena 兜底领奖失败时，warnings 记录并在 summary 中体现"""
+    monkeypatch.setattr("asyncio.sleep", _instant_sleep)
+    next_times = iter([55, 55, 0])  # 第 1、2 场后冷却，第 3 场结束
+
+    class FailFallbackBridge(FakeBridge):
+        @property
+        def last_next_time(self):
+            try:
+                return next(next_times)
+            except StopIteration:
+                return 0
+
+        def solve(self, task):
+            # 第 4 次调用（兜底）时抛异常
+            if task == "arena" and self.solves.count("arena") >= 3:
+                raise RuntimeError("颜色识别超时")
+            return super().solve(task)
+
+    bridge = FailFallbackBridge(ap=100)
+    engine = make_engine(
+        bridge,
+        events=[],
+        data_dir=str(tmp_path),
+        baas={"tasks": ["arena"]},
+        sweep={"normal_tasks": []},
+    )
+    result = await engine.run_once()
+    # 3 场正常 + 1 次兜底失败：兜底抛异常前 super().solve() 未执行，
+    # 所以 self.solves 只有 3 个 arena（异常的那次没有 append）
+    assert bridge.solves.count("arena") == 3
+    assert result.executed_tasks.count("arena") == 3
+    # 兜底失败记录到 warnings
+    assert len(result.warnings) == 1
+    assert "竞技场兜底领奖失败" in result.warnings[0]
+    # summary 中包含警告
+    assert "警告" in result.summary
+
+
+@pytest.mark.asyncio
 async def test_sweep_restarts_simulator_when_ap_read_fails(tmp_path):
     """体力读取失败（游戏/模拟器失联）→ 自动重启一次模拟器后重试成功"""
     class ApFailOnceBridge(FakeBridge):

@@ -54,6 +54,7 @@ class RunResult:
     pushed_activities: list[str] = field(default_factory=list)
     executed_tasks: list[str] = field(default_factory=list)
     swept: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     ap_before_sweep: int = -1
     summary: str = ""
 
@@ -538,6 +539,7 @@ class Engine:
             logger.info("竞技场兜底领奖已执行")
         except Exception as exc:  # noqa: BLE001
             logger.warning("竞技场兜底领奖失败（非致命）: %s", exc)
+            self.result.warnings.append(f"竞技场兜底领奖失败: {exc}")
 
     # ---- 主流程 ----
 
@@ -548,6 +550,7 @@ class Engine:
             "summary": self.result.summary,
             "executed_tasks": self.result.executed_tasks,
             "swept": self.result.swept,
+            "warnings": self.result.warnings,
             "ap_before_sweep": self.result.ap_before_sweep,
             "new_activities": [e.__dict__ for e in self.result.new_activities],
             "pushed_activities": self.result.pushed_activities,
@@ -651,6 +654,8 @@ class Engine:
             parts.append(f"任务 {len(self.result.executed_tasks)} 个: {','.join(self.result.executed_tasks)}")
         if self.result.swept:
             parts.append(f"扫荡 {len(self.result.swept)} 项（体力 {self.result.ap_before_sweep}）")
+        if self.result.warnings:
+            parts.append(f"⚠ 警告: {'; '.join(self.result.warnings)}")
         return "；".join(parts)
 
 def _now() -> int:
