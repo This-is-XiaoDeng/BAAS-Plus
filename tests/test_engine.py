@@ -757,7 +757,8 @@ async def test_arena_loops_until_tickets_done(tmp_path, monkeypatch):
         sweep={"normal_tasks": []},
     )
     result = await engine.run_once()
-    assert bridge.solves.count("arena") == 3
+    # 循环 3 场 + 1 次兜底领奖 = 4 次 solve("arena")
+    assert bridge.solves.count("arena") == 4
     assert result.executed_tasks.count("arena") == 3
 
 
@@ -784,13 +785,13 @@ async def test_arena_interleaves_with_regular_tasks(tmp_path, monkeypatch):
         sweep={"normal_tasks": []},
     )
     result = await engine.run_once()
-    # arena 与常规任务都执行了
-    assert bridge.solves.count("arena") == 2
+    # arena 与常规任务都执行了（循环 2 场 + 1 次兜底领奖 = 3 次 solve("arena")）
+    assert bridge.solves.count("arena") == 3
     for t in ["cafe_reward", "lesson"]:
         assert t in bridge.solves
         assert t in result.executed_tasks
     # 锁串行化：任一时刻最多一个任务正在执行（solve 记录顺序无并发交叉）
-    assert bridge.solves.count("arena") + bridge.solves.count("cafe_reward") + bridge.solves.count("lesson") == 4
+    assert bridge.solves.count("arena") + bridge.solves.count("cafe_reward") + bridge.solves.count("lesson") == 5
 
 
 @pytest.mark.asyncio

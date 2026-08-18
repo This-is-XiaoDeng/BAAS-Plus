@@ -512,6 +512,10 @@ class Engine:
         循环终止。range(6) 仅是防御性上限，正常流程在 5 场后由 next_time 归零结束。
         这里模拟调度器的"冷却→再派发"，用 asyncio.sleep 而非 time.sleep，
         等待期间其他协程（常规任务）可运行。
+
+        循环结束后额外调用一次 solve("arena")：此时票已用完（tickets=0），
+        BAAS arena 模块会走 collect_tactical_challenge_reward() 分支领取
+        时间/排名奖励，作为兜底保障。
         """
         for i in range(6):
             try:
@@ -526,6 +530,14 @@ class Engine:
                 break
             logger.info("竞技场冷却 %ss，等待期间穿插执行其他任务（第 %s 场）", cooldown, i + 2)
             await asyncio.sleep(cooldown)
+
+        # 兜底：票已用完后再调一次 arena，触发 BAAS 内部的 collect_tactical_challenge_reward
+        # 领取时间/排名奖励（BAAS 颜色识别偶尔会失败，多调一次提高成功率）
+        try:
+            await asyncio.to_thread(self._solve_locked, "arena")
+            logger.info("竞技场兜底领奖已执行")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("竞技场兜底领奖失败（非致命）: %s", exc)
 
     # ---- 主流程 ----
 
