@@ -736,11 +736,7 @@ async def _instant_sleep(delay):
 
 @pytest.mark.asyncio
 async def test_arena_loops_until_tickets_done(tmp_path, monkeypatch):
-    """arena 自动重复：next_time>0 时异步等待冷却后继续，直到票用完（next_time=0）
-
-    票全部用完后引擎额外执行一次 collect_reward，兜底领取竞技场奖励
-    （BAAS arena 模块最后一票可能漏领）。
-    """
+    """arena 自动重复：next_time>0 时异步等待冷却后继续，直到票用完（next_time=0）"""
     monkeypatch.setattr("asyncio.sleep", _instant_sleep)  # 测试中不真等冷却
     next_times = iter([55, 55, 0])  # 第 1、2 场后冷却，第 3 场结束
 
@@ -763,18 +759,11 @@ async def test_arena_loops_until_tickets_done(tmp_path, monkeypatch):
     result = await engine.run_once()
     assert bridge.solves.count("arena") == 3
     assert result.executed_tasks.count("arena") == 3
-    # 票用完后兜底领取奖励：collect_reward 恰好在最后一票之后、只执行一次
-    assert bridge.solves.count("collect_reward") == 1
-    assert result.executed_tasks.count("collect_reward") == 1
-    assert bridge.solves.index("collect_reward") > bridge.solves.index("arena")
 
 
 @pytest.mark.asyncio
 async def test_arena_interleaves_with_regular_tasks(tmp_path, monkeypatch):
-    """arena 冷却等待期间穿插执行常规任务（asyncio.sleep 让出事件循环）
-
-    票用完后同样会兜底执行一次 collect_reward（与常规任务顺序无关）。
-    """
+    """arena 冷却等待期间穿插执行常规任务（asyncio.sleep 让出事件循环）"""
     monkeypatch.setattr("asyncio.sleep", _instant_sleep)
     next_times = iter([55, 0])  # 第 1 场后冷却 55s，第 2 场结束
 
@@ -795,78 +784,13 @@ async def test_arena_interleaves_with_regular_tasks(tmp_path, monkeypatch):
         sweep={"normal_tasks": []},
     )
     result = await engine.run_once()
-    # arena 与常规任务都执行了；票用完后的兜底领奖也执行了
+    # arena 与常规任务都执行了
     assert bridge.solves.count("arena") == 2
     for t in ["cafe_reward", "lesson"]:
         assert t in bridge.solves
         assert t in result.executed_tasks
-    assert bridge.solves.count("collect_reward") == 1
     # 锁串行化：任一时刻最多一个任务正在执行（solve 记录顺序无并发交叉）
-    assert (
-        bridge.solves.count("arena")
-        + bridge.solves.count("cafe_reward")
-        + bridge.solves.count("lesson")
-        + bridge.solves.count("collect_reward")
-        == 5
-    )
-
-
-@pytest.mark.asyncio
-async def test_arena_no_fallback_when_execution_fails(tmp_path, monkeypatch):
-    """arena 执行失败时（首场就抛异常）不兜底领取奖励：没有打完票，无可领奖励"""
-    monkeypatch.setattr("asyncio.sleep", _instant_sleep)
-
-    class FailBridge(FakeBridge):
-        def __init__(self, *a, **kw):
-            super().__init__(*a, **kw)
-            self.arena_attempts = 0
-
-        def solve(self, task):
-            if task == "arena":
-                self.arena_attempts += 1
-                raise RuntimeError("模拟 arena 失败")
-            return super().solve(task)
-
-    bridge = FailBridge(ap=100)
-    engine = make_engine(
-        bridge,
-        events=[],
-        data_dir=str(tmp_path),
-        baas={"tasks": ["arena"]},
-        sweep={"normal_tasks": []},
-    )
-    result = await engine.run_once()
-    assert bridge.arena_attempts == 1  # 首场失败即退出，不再重试
-    assert bridge.solves.count("arena") == 0  # 失败的执行不会记录到 solves
-    assert bridge.solves.count("collect_reward") == 0
-    assert result.status == "partial"
-
-
-@pytest.mark.asyncio
-async def test_arena_no_fallback_when_loop_exhausted(tmp_path, monkeypatch):
-    """冷却始终 >0 导致 range(6) 防御上限耗尽（票未用完）时，不兜底领取奖励
-
-    只应在「票确实用完」（last_next_time<=0 退出）时领取，避免比赛未结束时
-    误触发领奖打断流程。
-    """
-    monkeypatch.setattr("asyncio.sleep", _instant_sleep)
-
-    class BusyBridge(FakeBridge):
-        @property
-        def last_next_time(self):
-            return 55  # 永远在冷却：模拟循环被 range(6) 上限截断
-
-    bridge = BusyBridge(ap=100)
-    engine = make_engine(
-        bridge,
-        events=[],
-        data_dir=str(tmp_path),
-        baas={"tasks": ["arena"]},
-        sweep={"normal_tasks": []},
-    )
-    result = await engine.run_once()
-    assert bridge.solves.count("arena") == 6  # 防御性上限跑满
-    assert bridge.solves.count("collect_reward") == 0
+    assert bridge.solves.count("arena") + bridge.solves.count("cafe_reward") + bridge.solves.count("lesson") == 4
 
 
 @pytest.mark.asyncio

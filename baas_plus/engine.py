@@ -512,14 +512,7 @@ class Engine:
         循环终止。range(6) 仅是防御性上限，正常流程在 5 场后由 next_time 归零结束。
         这里模拟调度器的"冷却→再派发"，用 asyncio.sleep 而非 time.sleep，
         等待期间其他协程（常规任务）可运行。
-
-        兜底领奖：BAAS arena 模块「最后一票打完时领奖励」的实现在实际运行中可能
-        漏领（历史问题），因此票全部用完（last_next_time<=0 退出循环）后额外执行
-        一次 collect_reward 确保竞技场奖励被领取。collect_reward 幂等（无可领奖励
-        时快速跳过），即使任务列表里已勾选 collect_reward（主流程「所有任务之后」
-        阶段会再领一次）也无副作用。
         """
-        tickets_done = False
         for i in range(6):
             try:
                 await asyncio.to_thread(self._solve_locked, "arena")
@@ -530,20 +523,9 @@ class Engine:
                 break
             cooldown = self.bridge.last_next_time
             if cooldown <= 0:
-                tickets_done = True
                 break
             logger.info("竞技场冷却 %ss，等待期间穿插执行其他任务（第 %s 场）", cooldown, i + 2)
             await asyncio.sleep(cooldown)
-
-        if tickets_done:
-            # 所有票已打完：BAAS arena 模块最后一票可能漏领奖励，兜底领一次
-            # （与常规任务共用 _baas_lock，不会与并行任务冲突；失败仅降级为 partial）
-            try:
-                await asyncio.to_thread(self._solve_locked, "collect_reward")
-                self.result.executed_tasks.append("collect_reward")
-            except Exception as exc:  # noqa: BLE001
-                logger.error("竞技场奖励领取失败（collect_reward）: %s", exc)
-                self.result.status = "partial"
 
     # ---- 主流程 ----
 
