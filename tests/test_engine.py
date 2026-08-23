@@ -25,6 +25,7 @@ class FakeBridge:
         self.normal_tasks = None
         self.hard_tasks = None
         self.activity_sweep = None
+        self.special_task_times = None
         self._next_time = 0
         self.baas_sweep_config = {"mainlinePriority": [], "hardPriority": []}
         self.banner_text = ""
@@ -74,6 +75,9 @@ class FakeBridge:
 
     def set_activity_sweep(self, task_number, times):
         self.activity_sweep = (task_number, times)
+
+    def set_special_task_times(self, times):
+        self.special_task_times = times
 
     def list_activity_modules(self):
         return getattr(self, "activity_modules", [])
@@ -1059,3 +1063,101 @@ def test_check_baas_update(tmp_path, monkeypatch):
         update = bridge.check_baas_update()
     assert update["latest"] == "2.0.0"
     assert update["compatible"] is False
+
+
+# ---- 无活动时用剩余体力扫荡特别委托 ----
+
+def _ongoing_event() -> GameEvent:
+    """构造一个进行中的活动类事件"""
+    return GameEvent(
+        id=99, title="进行中活动", start_at=int(time.time()) - 10,
+        end_at=int(time.time()) + 86400, event_type=EventType.EVENT,
+    )
+
+
+@pytest.mark.asyncio
+async def test_special_task_sweep_when_no_activity(tmp_path):
+    """无活动 + 开关开启：普通/困难图扫完后执行特别委托扫荡"""
+    bridge = FakeBridge(ap=120)
+    engine = make_engine(
+        bridge, events=[], data_dir=str(tmp_path),
+        sweep={
+            "normal_tasks": ["15-1-99"],
+            "special_task_when_no_activity": True,
+            "special_task_times": "3,max",
+        },
+    )
+    swept = await engine.run_sweep()
+    # 次数配置写入 BAAS 且任务被执行
+    assert bridge.special_task_times == "3,max"
+    assert "clear_special_task_power" in bridge.solves
+    assert swept[-1] == "special_task:3,max"
+    # 特别委托在普通图扫荡之后执行（吃剩余体力）
+    assert bridge.solves.index("normal_task") < bridge.solves.index("clear_special_task_power")
+
+
+@pytest.mark.asyncio
+async def test_special_task_sweep_skipped_when_activity_ongoing(tmp_path):
+    """有进行中活动时不扫特别委托（体力留给活动关卡）"""
+    event = _ongoing_event()
+    bridge = FakeBridge(ap=120)
+    engine = make_engine(
+        bridge, events=[event], data_dir=str(tmp_path),
+        sweep={"special_task_when_no_activity": True},
+        baas={"current_activity": ""},
+    )
+    # 先做一次活动检测把进行中活动写入本地状态
+    await engine.detect_new_activities()
+    swept = await engine.run_sweep()
+    assert "clear_special_task_power" not in bridge.solves
+    assert all(not s.startswith("special_task:") for s in swept)
+
+
+@pytest.mark.asyncio
+async def test_special_task_sweep_disabled_by_default(tmp_path):
+    """默认关闭：不设置次数也不执行"""
+    bridge = FakeBridge(ap=120)
+    engine = make_engine(
+        bridge, events=[], data_dir=str(tmp_path),
+        sweep={"normal_tasks": []},
+    )
+    await engine.run_sweep()
+    assert bridge.special_task_times is None
+    assert "clear_special_task_power" not in bridge.solves
+
+
+@pytest.mark.asyncio
+async def test_special_task_sweep_failure_records_warning(tmp_path):
+    """特别委托扫荡失败只记警告，不中断整轮流程"""
+    class FailBridge(FakeBridge):
+        def solve(self, task):
+            if task == "clear_special_task_power":
+                raise RuntimeError("OCR 失败")
+            return super().solve(task)
+
+    bridge = FailBridge(ap=120)
+    engine = make_engine(
+        bridge, events=[], data_dir=str(tmp_path),
+        sweep={"special_task_when_no_activity": True},
+        baas={"current_activity": ""},  # 不选活动模块，排除活动扫荡干扰
+    )
+    swept = await engine.run_sweep()
+    assert swept == []
+    assert len(engine.result.warnings) == 1
+    assert "特别委托扫荡失败" in engine.result.warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_special_task_not_run_twice_when_enabled(tmp_path):
+    """开关开启时勾选的「特别委托」任务改由扫荡阶段调度，整轮只执行一次"""
+    bridge = FakeBridge(ap=120)
+    engine = make_engine(
+        bridge, events=[], data_dir=str(tmp_path),
+        baas={"tasks": ["cafe_reward", "clear_special_task_power"]},
+        sweep={"special_task_when_no_activity": True},
+    )
+    result = await engine.run_once()
+    assert bridge.solves.count("clear_special_task_power") == 1
+    # 执行顺序：任务阶段（cafe_reward）在前，扫荡阶段（特别委托）在后
+    assert bridge.solves.index("cafe_reward") < bridge.solves.index("clear_special_task_power")
+    assert "clear_special_task_power" not in result.executed_tasks

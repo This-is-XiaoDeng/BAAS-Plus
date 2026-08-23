@@ -140,7 +140,7 @@
     <div class="card">
       <h2>勾选任务（顺序执行）</h2>
       <div class="chk" id="task_list"></div>
-      <p class="hint">扫荡类任务（普通/困难/活动扫荡）不在此列表，由「扫荡策略」统一按剩余体力调度。</p>
+      <p class="hint">扫荡类任务（普通/困难/活动扫荡）不在此列表，由「扫荡策略」统一按剩余体力调度。开启「没有活动时用剩余体力扫荡特别委托」后，「特别委托」也改由扫荡阶段调度。</p>
     </div>
 
     <div class="card">
@@ -171,6 +171,8 @@
       <input id="sweep_normal_tasks" placeholder="15-1-3,16-3-5">
       <label>困难图扫荡列表</label>
       <input id="sweep_hard_tasks" placeholder="20-1-max">
+      <div class="chk"><label><input type="checkbox" id="sweep_special_task"> 没有活动时用剩余体力扫荡特别委托（据点防御/信用回收）</label></div>
+      <div class="row"><div><label>特别委托次数（据点防御,信用回收；数字或 max，max=按剩余体力点满）</label><input id="sweep_special_task_times" value="0,max" placeholder="0,max"></div></div>
     </div>
 
     <div class="card">
@@ -291,6 +293,9 @@ function loadForm() {
   $('sweep_activity_first').checked = a.sweep.activity_first;
   $('sweep_normal_tasks').value = (a.sweep.normal_tasks || []).join(',');
   $('sweep_hard_tasks').value = (a.sweep.hard_tasks || []).join(',');
+  // 兼容旧配置：无该字段时视为关闭/默认值
+  $('sweep_special_task').checked = !!a.sweep.special_task_when_no_activity;
+  $('sweep_special_task_times').value = a.sweep.special_task_times || '0,max';
   $('acc_notify_to_addrs').value = (a.notify_to_addrs || []).join(',');
   // 全局项（不在账号内）
   $('notify_enabled').checked = cfg.notify.enabled;
@@ -372,6 +377,8 @@ function collectConfig() {
       activity_task_number: $('sweep_activity_task_number').value.trim() || '1',
       normal_tasks: $('sweep_normal_tasks').value.split(',').map(s => s.trim()).filter(Boolean),
       hard_tasks: $('sweep_hard_tasks').value.split(',').map(s => s.trim()).filter(Boolean),
+      special_task_when_no_activity: $('sweep_special_task').checked,
+      special_task_times: $('sweep_special_task_times').value.trim() || '0,max',
     },
     notify_to_addrs: notifyAddrs.length ? notifyAddrs : null,
   };

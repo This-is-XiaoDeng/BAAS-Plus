@@ -150,6 +150,14 @@ class SweepConfig(BaseModel):
     # 如 ["15-1-3", "16-3-5"]；strategy=auto 时 counts 会被引擎按剩余体力重算
     normal_tasks: list[str] = Field(default_factory=list)
     hard_tasks: list[str] = Field(default_factory=list)
+    # 无活动进行中时，普通/困难图扫完后用剩余体力扫荡特别委托
+    # （BAAS 任务 clear_special_task_power：据点防御 / 信用回收）
+    special_task_when_no_activity: bool = False
+    # 特别委托扫荡次数（BAAS 配置 special_task_times 原生格式："据点防御,信用回收"，
+    # 每项为数字或 max；max 时 BAAS 按当前剩余体力点满扫荡，体力不足自动停止）
+    special_task_times: str = Field(
+        default="0,max", pattern=r"^\s*(?:max|\d+)\s*,\s*(?:max|\d+)\s*$"
+    )
 
 
 class EmailConfig(BaseModel):

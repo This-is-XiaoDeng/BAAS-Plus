@@ -8,6 +8,8 @@
 5. 全部任务完成后读取剩余体力，计算扫荡次数：
    - 有活动且 activity_first → 先扫活动关卡（BAAS activity_sweep，-1 = 按 AP 自动）
    - 无活动（或配置）→ 扫普通/困难图（auto 模式下按剩余体力重算每关次数）
+   - 无活动且开启开关 → 普通/困难图扫完后把剩余体力交给特别委托
+     （clear_special_task_power，special_task_times=max 时 BAAS 按当前 AP 点满）
 6. 写入执行记录 + 邮件通知
 """
 from __future__ import annotations
@@ -347,6 +349,8 @@ class Engine:
         mainlinePriority / hardPriority（格式一致："区域-关卡-次数"）。
         活动扫荡：从 GameKee 进行中的活动里选择能映射到 BAAS 模块的活动，
         避免扫到已结束（仅兑换可用）的活动模块。
+        无活动且开启 special_task_when_no_activity 时，普通/困难图扫完后
+        把剩余体力交给特别委托（clear_special_task_power）。
         """
         swept: list[str] = []
         ap = self.bridge.get_ap()
@@ -467,6 +471,24 @@ class Engine:
             self.bridge.set_sweep_tasks(normal, hard)
             self.bridge.solve("hard_task")
             swept.extend(hard)
+
+        # 无活动进行中时，把普通/困难图扫剩的体力交给特别委托兜底。
+        # 放在最后执行：normal/hard 消耗的是按初始体力预计算的次数，特别委托用
+        # BAAS 的 max 语义吃掉剩余部分（BAAS 内部检测到体力不足会自动停止）；
+        # has_active_activity 基于本地活动状态，有活动（即使活动扫荡没跑成）
+        # 时不抢体力，留给活动关卡
+        if self.config.sweep.special_task_when_no_activity and not self.has_active_activity():
+            times = ",".join(
+                p.strip() for p in self.config.sweep.special_task_times.split(",")
+            )
+            logger.info("无活动，用剩余体力扫荡特别委托（special_task_times=%s）", times)
+            try:
+                self.bridge.set_special_task_times(times)
+                self.bridge.solve("clear_special_task_power")
+                swept.append(f"special_task:{times}")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("特别委托扫荡失败（不中断后续流程）: %s", exc)
+                self.result.warnings.append(f"特别委托扫荡失败: {exc}")
         return swept
 
     async def _recover_ap(self) -> int:
@@ -610,6 +632,16 @@ class Engine:
             # 4. 勾选任务（扫荡类任务由扫荡阶段统一调度）；arena 与常规任务穿插：
             #    arena 冷却等待（asyncio.sleep）期间让出事件循环，常规任务继续跑
             sweepless = [t for t in self.config.baas.tasks if t not in SWEEP_TASKS]
+            # 特别委托改由扫荡阶段统一调度时（无活动 + 剩余体力），从任务阶段剔除，
+            # 避免同一轮执行两次（任务阶段在扫荡之前，用的还是上一轮持久化的次数）
+            if (
+                self.config.sweep.special_task_when_no_activity
+                and "clear_special_task_power" in sweepless
+            ):
+                logger.info(
+                    "特别委托已改由扫荡阶段调度（无活动时按剩余体力），任务阶段跳过"
+                )
+                sweepless = [t for t in sweepless if t != "clear_special_task_power"]
             # 活动推图已由「活动策略」配置统一调度（新活动自动推图），任务列表入口已
             # 移除；旧配置残留 explore_activity_* 时跳过并提示，避免重复推图
             deprecated_act = [t for t in sweepless if t.startswith("explore_activity")]

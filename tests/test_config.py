@@ -200,3 +200,34 @@ def test_legacy_config_save_writes_new_structure(tmp_path):
     assert "accounts" in saved
     assert saved["accounts"][0]["id"] == "acc_default"
     assert "baas" not in saved  # 顶层不再有账号字段
+
+
+def test_special_task_sweep_defaults():
+    """特别委托扫荡开关默认关闭、次数默认 0,max（向后兼容：旧配置无该字段）"""
+    config = AppConfig()
+    assert config.sweep.special_task_when_no_activity is False
+    assert config.sweep.special_task_times == "0,max"
+
+
+def test_special_task_sweep_roundtrip(tmp_path):
+    config = AppConfig()
+    config.sweep.special_task_when_no_activity = True
+    config.sweep.special_task_times = "max,0"
+    path = save_config(config, str(tmp_path / "config.json"))
+    loaded = load_config(str(path))
+    assert loaded.sweep.special_task_when_no_activity is True
+    assert loaded.sweep.special_task_times == "max,0"
+
+
+@pytest.mark.parametrize("times", ["0,max", "max,0", "3,5", "max,max", "0, 1"])
+def test_special_task_times_valid(times):
+    account = AccountConfig(sweep={"special_task_times": times})
+    assert "," in account.sweep.special_task_times
+
+
+@pytest.mark.parametrize(
+    "times", ["", "max", "1,2,3", "-1,2", "a,b", "1.5,2", "max;0"]
+)
+def test_special_task_times_invalid_rejected(times):
+    with pytest.raises(ValueError):
+        AccountConfig(sweep={"special_task_times": times})

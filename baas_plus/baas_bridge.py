@@ -804,6 +804,20 @@ class BaasBridge:
         config_set.set("activity_sweep_times", times)
         logger.info("已设置活动扫荡: 关卡=%s 次数=%s", task_number, times)
 
+    def set_special_task_times(self, times: str) -> None:
+        """设置特别委托（特殊委托）扫荡次数（BAAS 配置 special_task_times）
+
+        BAAS 的 clear_special_task_power 任务读取该字段，格式为逗号分隔的
+        两项："据点防御次数,信用回收次数"，每项可为数字或 max：
+        - 数字：在该类委托的可扫荡关卡上点击 + 按钮凑够次数后扫荡
+        - max：在关卡详情页点击最大次数按钮（按当前剩余体力点满）后扫荡；
+          剩余体力不足一次时 BAAS 检测到购买体力弹窗（purchase_ap_notice）
+          优雅终止，不会误购体力
+        """
+        config_set = self._config_set()
+        config_set.set("special_task_times", times)
+        logger.info("已设置特别委托扫荡次数: %s", times)
+
     # ---- 生命周期 ----
 
     def check_baas(self) -> dict[str, Any]:
