@@ -188,6 +188,13 @@
     </div>
 
     <div class="card">
+      <h2>📮 本账号收件人覆盖</h2>
+      <label>收件人（逗号分隔多个；仅影响当前账号的执行结果通知）</label>
+      <input id="acc_notify_to_addrs" placeholder="留空 = 用全局收件人">
+      <p class="hint">账号级设置：留空时使用「邮件通知」页里的全局收件人；设值后当前账号的汇总邮件只发给这里填的地址。</p>
+    </div>
+
+    <div class="card">
       <h2>✅ 勾选任务（顺序执行）</h2>
       <div class="chk" id="task_list"></div>
       <p class="hint">扫荡类任务（普通/困难/活动扫荡）不在此列表，由「扫荡策略」统一按剩余体力调度。开启「没有活动时用剩余体力扫荡特别委托」后，「特别委托」也改由扫荡阶段调度。</p>
@@ -244,10 +251,11 @@
     </div>
   </section>
 
-  <!-- ===== 邮件通知（全局 + 当前账号覆盖） ===== -->
+  <!-- ===== 邮件通知（纯全局设置，不随账号变化） ===== -->
   <section id="page-mail" class="page" hidden>
     <div class="card">
-      <h2>✉ 邮件通知（全局）</h2>
+      <h2>✉ 邮件通知（全局设置，所有账号共用）</h2>
+      <p class="hint" style="margin-top:0;">以下为全局 SMTP 通知配置，不隶属于任何账号；账号级「收件人覆盖」在「配置」页中设置。</p>
       <div class="chk"><label><input type="checkbox" id="notify_enabled"> 启用通知（全局）</label></div>
       <div class="chk"><label><input type="checkbox" id="notify_game_screenshot"> 执行完成后回游戏主界面并截图，嵌入汇总邮件（走 adb/BAAS 通道，无需浏览器）</label></div>
       <div class="row">
@@ -259,7 +267,6 @@
       <label>SMTP 授权码</label><input id="mail_password" type="password" placeholder="授权码（非登录密码）">
       <label>发件地址（留空用账号）</label><input id="mail_from_addr">
       <label>收件地址（逗号分隔多个，全局）</label><input id="mail_to_addrs" placeholder="a@qq.com,b@qq.com">
-      <label>本账号收件人覆盖（留空用全局；可填不同收件人）</label><input id="acc_notify_to_addrs" placeholder="留空 = 用全局收件人">
       <p class="hint">常用服务器：QQ邮箱 smtp.qq.com:465 · 163 smtp.163.com:465 · 网易免费企业邮 smtp.qiye.163.com:465（认证用客户端授权码，非登录密码；网易连续认证失败会临时锁定，请勿频繁测试）</p>
       <div class="card-actions">
         <button class="btn ghost" onclick="testEmail()">✉ 测试邮件</button>
