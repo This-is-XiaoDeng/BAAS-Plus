@@ -175,6 +175,9 @@ class NotifyConfig(BaseModel):
 
     enabled: bool = False
     email: EmailConfig = Field(default_factory=EmailConfig)
+    # 执行完成后：回游戏主界面 → adb 截取模拟器画面 → 作为内联图片嵌入汇总邮件
+    # （走 BAAS 桥接层，无需额外浏览器；截图失败仅注明，不阻断邮件发送）
+    attach_game_screenshot: bool = False
 
 
 class WebUIConfig(BaseModel):

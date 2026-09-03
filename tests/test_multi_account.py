@@ -1,7 +1,7 @@
 """多账号编排测试（MultiAccountRunner：串行、失败隔离、共享 Main 注入）"""
 import pytest
 
-from baas_plus.config import AppConfig
+from baas_plus.config import AppConfig, EmailConfig
 from baas_plus.multi_account import MultiAccountRunner
 from baas_plus.store import Store
 
@@ -81,6 +81,9 @@ class FakeBridge:
 
     def go_main_page(self):
         return True
+
+    def capture_screenshot(self, out_path):
+        return True, str(out_path)
 
     def close_announcement_popups(self, timeout=30.0):
         return True
@@ -248,3 +251,110 @@ async def test_same_server_fetcher_shared(tmp_path):
     e3 = runner._new_engine(config.accounts[2])
     assert e1.fetcher is e2.fetcher  # 同服复用
     assert e1.fetcher is not e3.fetcher  # 不同服独立
+
+
+# ---- 汇总邮件内联游戏截图 ----
+
+class FakeSMTP:
+    """模拟 SMTP 连接（记录发信内容，供断言邮件结构）"""
+
+    sent = {}
+
+    def __init__(self, *a, **kw):
+        pass
+
+    def ehlo(self):
+        pass
+
+    def starttls(self):
+        pass
+
+    def login(self, user, pwd):
+        pass
+
+    def sendmail(self, from_, to, msg):
+        type(self).sent["mail"] = (from_, to, msg)
+
+    def quit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _parse_sent_mail():
+    """按 policy.default 解析捕获的邮件（支持 get_content / 遍历附件）"""
+    from email import policy
+    from email.parser import BytesParser
+
+    raw = FakeSMTP.sent["mail"][2]
+    return BytesParser(policy=policy.default).parsebytes(raw.encode("utf-8"))
+
+
+def _notify_config(tmp_path, with_screenshot=True):
+    config = AppConfig(data_dir=str(tmp_path), accounts=[{"name": "主号"}, {"name": "小号"}])
+    config.notify.enabled = True
+    config.notify.email = EmailConfig(
+        username="u@qq.com", password="authcode", from_addr="u@qq.com", to_addrs=["v@qq.com"]
+    )
+    config.notify.attach_game_screenshot = with_screenshot
+    return config
+
+
+def _fake_png(tmp_path, name="shot.png"):
+    """构造一个最小可读的 PNG（发送时会读字节）"""
+    p = tmp_path / name
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+    return p
+
+
+def test_notify_summary_embeds_game_screenshots(tmp_path, monkeypatch):
+    """开启通知截图：每账号截图以 cid:ba_<id> 内联嵌入汇总邮件（multipart/related）"""
+    import smtplib
+
+    from email import message_from_string
+
+    from baas_plus.engine import RunResult
+
+    FakeSMTP.sent = {}
+    monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSMTP)
+    config = _notify_config(tmp_path, with_screenshot=True)
+    runner = make_runner(config, tmp_path)
+    png = _fake_png(tmp_path)
+    results = [
+        (config.accounts[0].id, RunResult(status="success", summary="全部任务完成", ap_before_sweep=120, screenshot_path=str(png))),
+        (config.accounts[1].id, RunResult(status="failed", summary="BAAS 初始化失败")),
+    ]
+    runner._notify_summary(results, 65.0)
+
+    msg = _parse_sent_mail()
+    assert msg.get_content_type() == "multipart/related"  # 内联图片结构
+    html = [p for p in msg.walk() if p.get_content_type() == "text/html"][0]
+    assert f"cid:ba_{config.accounts[0].id}" in html.get_content()
+    imgs = [p for p in msg.walk() if p.get_content_type() == "image/png"]
+    assert len(imgs) == 1  # 只有成功截图的账号附带图片
+    assert imgs[0].get("Content-ID") == f"<ba_{config.accounts[0].id}>"
+    # 纯文本替代部分保留（兼容不支持 HTML 的客户端）
+    text = [p for p in msg.walk() if p.get_content_type() == "text/plain"][0]
+    assert "最终剩余体力" in text.get_content()
+
+
+def test_notify_summary_skips_screenshots_when_disabled(tmp_path, monkeypatch):
+    """未开启通知截图：即使结果带截图路径也不附加图片（multipart/alternative）"""
+    import smtplib
+
+    from email import message_from_string
+
+    from baas_plus.engine import RunResult
+
+    FakeSMTP.sent = {}
+    monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSMTP)
+    config = _notify_config(tmp_path, with_screenshot=False)
+    runner = make_runner(config, tmp_path)
+    png = _fake_png(tmp_path)
+    results = [(config.accounts[0].id, RunResult(status="success", summary="ok", screenshot_path=str(png)))]
+    runner._notify_summary(results, 5.0)
+
+    msg = _parse_sent_mail()
+    assert msg.get_content_type() == "multipart/alternative"  # 无图片 → text+html 双形态
+    assert not any(p.get_content_type() == "image/png" for p in msg.walk())

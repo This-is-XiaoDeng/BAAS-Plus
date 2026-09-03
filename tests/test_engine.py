@@ -133,6 +133,12 @@ class FakeBridge:
         self.solves.append("go_main_page")
         return True
 
+    def capture_screenshot(self, out_path):
+        self.solves.append("capture_screenshot")
+        if getattr(self, "screenshot_ok", True):
+            return True, str(out_path)
+        return False, "模拟截图失败"
+
     def close_announcement_popups(self, timeout=30.0):
         return True
 
@@ -148,7 +154,7 @@ class FakeFetcher:
         return self.events
 
 
-def make_engine(bridge=None, events=None, data_dir=None, account_id="acc_test", **cfg_kwargs):
+def make_engine(bridge=None, events=None, data_dir=None, account_id="acc_test", capture_screenshot=False, **cfg_kwargs):
     if data_dir is None:
         import tempfile
 
@@ -175,6 +181,8 @@ def make_engine(bridge=None, events=None, data_dir=None, account_id="acc_test", 
         store=store,
         bridge=bridge or FakeBridge(),
         fetcher=FakeFetcher(events),
+        data_dir=data_dir,
+        capture_screenshot=capture_screenshot,
     )
     return engine
 
@@ -184,6 +192,41 @@ def test_compute_sweep_times():
     assert compute_sweep_times(120, 20, 3) == 3  # 上限 3（困难图）
     assert compute_sweep_times(5, 10, 20) == 0  # 不足一次
     assert compute_sweep_times(0, 10, 20) == 0
+
+
+@pytest.mark.asyncio
+async def test_run_once_captures_screenshot_when_enabled(tmp_path):
+    """开启通知截图：执行结束先回游戏主界面再截图，路径写入 result.screenshot_path"""
+    bridge = FakeBridge()
+    engine = make_engine(bridge, events=[], data_dir=str(tmp_path), capture_screenshot=True)
+    result = await engine.run_once()
+    # 截图必须发生在真正收尾（bridge.stop）之前：solves 末尾为 回主页 → 截图
+    assert bridge.solves[-2:] == ["go_main_page", "capture_screenshot"]
+    assert result.screenshot_path == str(
+        tmp_path / "screenshots" / f"{engine.account_id}.png"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_once_skips_screenshot_when_disabled(tmp_path):
+    """未开启通知截图：不触发回主页/截图，screenshot_path 为空"""
+    bridge = FakeBridge()
+    engine = make_engine(bridge, events=[], data_dir=str(tmp_path), capture_screenshot=False)
+    result = await engine.run_once()
+    assert "capture_screenshot" not in bridge.solves
+    assert result.screenshot_path == ""
+
+
+@pytest.mark.asyncio
+async def test_run_once_screenshot_failure_only_warns(tmp_path):
+    """截图失败只记警告，不影响执行结果"""
+    bridge = FakeBridge()
+    bridge.screenshot_ok = False
+    engine = make_engine(bridge, events=[], data_dir=str(tmp_path), capture_screenshot=True)
+    result = await engine.run_once()
+    assert result.status in ("success", "partial")
+    assert any("主页截图失败" in w for w in result.warnings)
+    assert result.screenshot_path == ""
 
 
 @pytest.mark.asyncio

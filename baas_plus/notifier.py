@@ -1,11 +1,20 @@
-"""通知模块：邮件推送（smtplib，标准库实现，支持 SSL / STARTTLS）"""
+"""通知模块：邮件推送（smtplib，标准库实现，支持 SSL / STARTTLS）
+
+支持两种正文形态：
+- 纯文本（send）：原有行为，兼容各客户端；
+- HTML + 内联图片（send_html）：执行汇总邮件用它内嵌各账号执行完成时的
+  游戏主界面截图（adb 截帧），收件人无需打开模拟器即可看到执行结果。
+"""
 from __future__ import annotations
 
 import logging
 import smtplib
 from email.header import Header
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
+from pathlib import Path
 
 from .config import EmailConfig
 
@@ -21,7 +30,7 @@ class EmailNotifier:
     def enabled(self) -> bool:
         return bool(self.config.smtp_host and self.config.username and self.config.password and self.config.to_addrs)
 
-    def _send_once(self, cfg: EmailConfig, msg: MIMEText) -> None:
+    def _send_once(self, cfg: EmailConfig, msg) -> None:
         """单次发送：连接 → ehlo → 认证 → 发送 → 显式 quit
 
         参考网易邮箱坑（SMTPServerDisconnected: Connection unexpectedly closed）：
@@ -47,15 +56,9 @@ class EmailNotifier:
                 except Exception:  # noqa: BLE001
                     pass
 
-    def send(self, subject: str, body: str) -> bool:
-        """发送邮件；成功返回 True，失败返回 False（具体原因见 self.last_error）"""
+    def _dispatch(self, subject: str, msg) -> bool:
+        """公共发送流程：填头信息 → 发送（断连自动重试一次）→ 错误归因"""
         cfg = self.config
-        if not self.enabled:
-            self.last_error = "邮件通知未完整配置（smtp_host/username/password/to_addrs 必填）"
-            logger.warning("邮件通知未完整配置（username/password/to_addrs），跳过发送")
-            return False
-
-        msg = MIMEText(body, "plain", "utf-8")
         msg["Subject"] = Header(subject, "utf-8")
         msg["From"] = formataddr((str(Header("BAAS-Plus", "utf-8")), cfg.from_addr or cfg.username))
         msg["To"] = ", ".join(cfg.to_addrs)
@@ -81,7 +84,59 @@ class EmailNotifier:
             logger.error("邮件通知发送失败: %s", exc)
             return False
 
+    def send(self, subject: str, body: str) -> bool:
+        """发送纯文本邮件；成功返回 True，失败返回 False（具体原因见 self.last_error）"""
+        if not self.enabled:
+            self.last_error = "邮件通知未完整配置（smtp_host/username/password/to_addrs 必填）"
+            logger.warning("邮件通知未完整配置（username/password/to_addrs），跳过发送")
+            return False
+        return self._dispatch(subject, MIMEText(body, "plain", "utf-8"))
+
+    def send_html(
+        self,
+        subject: str,
+        html: str,
+        text: str | None = None,
+        images: list[tuple[str, str | Path]] | None = None,
+    ) -> bool:
+        """发送 HTML 邮件，可选内联图片（images=[(cid, 图片路径)]）
+
+        有内联图片时结构为 multipart/related（alternative[text, html] + 图片），
+        HTML 内用 <img src="cid:<cid>"> 引用；图片文件缺失视为配置错误。
+        成功返回 True，失败返回 False（具体原因见 self.last_error）。
+        """
+        if not self.enabled:
+            self.last_error = "邮件通知未完整配置（smtp_host/username/password/to_addrs 必填）"
+            logger.warning("邮件通知未完整配置（username/password/to_addrs），跳过发送")
+            return False
+
+        images = list(images or [])
+        if images:
+            msg = MIMEMultipart("related")
+            alt = MIMEMultipart("alternative")
+            if text:
+                alt.attach(MIMEText(text, "plain", "utf-8"))
+            alt.attach(MIMEText(html, "html", "utf-8"))
+            msg.attach(alt)
+            for cid, image_path in images:
+                path = Path(image_path)
+                if not path.is_file():
+                    self.last_error = f"内联图片不存在: {path}"
+                    logger.error("%s（跳过该图片）", self.last_error)
+                    continue
+                img = MIMEImage(path.read_bytes())
+                img.add_header("Content-ID", f"<{cid}>")
+                img.add_header("Content-Disposition", "inline", filename=path.name)
+                msg.attach(img)
+        elif text:
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(text, "plain", "utf-8"))
+            msg.attach(MIMEText(html, "html", "utf-8"))
+        else:
+            msg = MIMEText(html, "html", "utf-8")
+        return self._dispatch(subject, msg)
+
 
 def send_notification(config: EmailConfig, subject: str, body: str) -> bool:
-    """便捷入口"""
+    """便捷入口（纯文本）"""
     return EmailNotifier(config).send(subject, body)

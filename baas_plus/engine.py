@@ -59,6 +59,8 @@ class RunResult:
     warnings: list[str] = field(default_factory=list)
     ap_before_sweep: int = -1
     summary: str = ""
+    # 执行完成时截取的游戏主界面画面（开启通知截图功能时写入，供汇总邮件内联）
+    screenshot_path: str = ""
 
 
 class Engine:
@@ -77,13 +79,17 @@ class Engine:
         bridge: BaasBridge | None = None,
         fetcher: ActivityFetcher | None = None,
         data_dir: str | None = None,
+        capture_screenshot: bool = False,
     ) -> None:
         self.config = account
         self.account_id = account_id or account.id
+        self.data_dir = data_dir
         self.store = store or Store(Path(data_dir or "data") / "baas_plus.db")
         self.bridge = bridge or BaasBridge(account)
         self.fetcher = fetcher or ActivityFetcher(account.activity.server)
         self.result = RunResult()
+        # 执行完成后回游戏主界面并截图（写入 result.screenshot_path，供汇总邮件内联）
+        self.capture_screenshot = capture_screenshot
         # arena 与常规任务并发执行时，用锁保证同一时刻仅一个任务操作 BAAS
         self._baas_lock = threading.Lock()
         self._update_checked = False
@@ -576,6 +582,7 @@ class Engine:
             "ap_before_sweep": self.result.ap_before_sweep,
             "new_activities": [e.__dict__ for e in self.result.new_activities],
             "pushed_activities": self.result.pushed_activities,
+            "screenshot_path": self.result.screenshot_path or "",
         }
         return detail
 
@@ -667,6 +674,21 @@ class Engine:
 
             self.result.summary = self._build_summary()
             self.store.finish_record(record_id, self.result.status, self.result.summary, self._record_detail())
+
+            # 7. 执行完成：回游戏主界面并截取画面（可选，供汇总邮件内联展示）。
+            #    截图失败只记警告，不改变执行结果；必须在 bridge.stop() 前完成
+            if self.capture_screenshot:
+                try:
+                    self.bridge.go_main_page()
+                    out = Path(self.data_dir or "data") / "screenshots" / f"{self.account_id}.png"
+                    ok, info = self.bridge.capture_screenshot(out)
+                    if ok:
+                        self.result.screenshot_path = info
+                    else:
+                        self.result.warnings.append(f"主页截图失败: {info}")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("主页截图异常（非致命）: %s", exc)
+                    self.result.warnings.append(f"主页截图异常: {exc}")
         except Exception as exc:  # noqa: BLE001
             logger.exception("执行失败")
             self.result.status = "failed"

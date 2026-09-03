@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .config import AccountConfig, AppConfig, SweepConfig
@@ -1010,6 +1011,35 @@ class BaasBridge:
             raise RuntimeError("Baas_thread 未初始化")
         self.baas_thread.to_main_page()
         logger.info("BAAS-Plus 已回到主界面")
+
+    def capture_screenshot(self, out_path: str | Path) -> tuple[bool, str]:
+        """截取模拟器当前画面（BAAS 内存帧，源自 adb screencap）保存为 PNG
+
+        调用前应先 go_main_page() 回到游戏主界面，得到有意义的「执行完成画面」。
+        使用 BAAS 进程内最新帧：先 update_screenshot_array() 刷新再落盘，
+        与 ocr_banner 取帧方式一致；BAAS 未初始化/无有效帧时返回失败原因。
+        """
+        out = Path(out_path)
+        if self.baas_thread is None:
+            return False, "Baas_thread 未初始化（BAAS 未启动）"
+        try:
+            update = getattr(self.baas_thread, "update_screenshot_array", None)
+            if callable(update):
+                update()
+            img = getattr(self.baas_thread, "latest_img_array", None)
+            if img is None:
+                return False, "无有效画面帧（模拟器/游戏未在前台）"
+            import cv2
+
+            out.parent.mkdir(parents=True, exist_ok=True)
+            ok = cv2.imwrite(str(out), img)
+            if not ok or not out.is_file() or out.stat().st_size == 0:
+                return False, "截图文件写入失败"
+            logger.info("已截取游戏画面: %s（%d 字节）", out, out.stat().st_size)
+            return True, str(out)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("游戏画面截图失败: %s", exc)
+            return False, f"截图失败: {exc}"
 
     def _ocr_crop(
         self, img: Any, region: tuple[int, int, int, int], enlarge: int = 2

@@ -249,6 +249,7 @@
     <div class="card">
       <h2>✉ 邮件通知（全局）</h2>
       <div class="chk"><label><input type="checkbox" id="notify_enabled"> 启用通知（全局）</label></div>
+      <div class="chk"><label><input type="checkbox" id="notify_game_screenshot"> 执行完成后回游戏主界面并截图，嵌入汇总邮件（走 adb/BAAS 通道，无需浏览器）</label></div>
       <div class="row">
         <div><label>SMTP 服务器</label><input id="mail_smtp_host" value="smtp.qq.com"></div>
         <div><label>端口</label><input id="mail_smtp_port" type="number" value="465"></div>
@@ -262,7 +263,9 @@
       <p class="hint">常用服务器：QQ邮箱 smtp.qq.com:465 · 163 smtp.163.com:465 · 网易免费企业邮 smtp.qiye.163.com:465（认证用客户端授权码，非登录密码；网易连续认证失败会临时锁定，请勿频繁测试）</p>
       <div class="card-actions">
         <button class="btn ghost" onclick="testEmail()">✉ 测试邮件</button>
+        <button class="btn ghost" onclick="testGameScreenshot()">📸 测试游戏主页截图</button>
       </div>
+      <pre id="shot_result" hidden></pre>
     </div>
   </section>
 
@@ -414,6 +417,7 @@ function loadForm() {
   $('acc_notify_to_addrs').value = (a.notify_to_addrs || []).join(',');
   // 全局项（不在账号内）
   $('notify_enabled').checked = cfg.notify.enabled;
+  $('notify_game_screenshot').checked = !!cfg.notify.attach_game_screenshot;
   $('mail_smtp_host').value = cfg.notify.email.smtp_host;
   $('mail_smtp_port').value = cfg.notify.email.smtp_port;
   $('mail_use_ssl').checked = cfg.notify.email.use_ssl;
@@ -504,6 +508,7 @@ function collectConfig() {
     data_dir: cfg.data_dir,
     notify: {
       enabled: $('notify_enabled').checked,
+      attach_game_screenshot: $('notify_game_screenshot').checked,
       email: {
         smtp_host: $('mail_smtp_host').value.trim(),
         smtp_port: parseInt($('mail_smtp_port').value) || 465,
@@ -590,6 +595,24 @@ async function testEmail() {
     if (r.ok) toast('测试邮件已发送 ✓', true);
     else toast('发送失败：' + (r.error || '请检查 SMTP 配置'), false);
   } catch (e) { toast('请求失败: ' + e.message, false); }
+}
+
+async function testGameScreenshot() {
+  $('shot_result').hidden = false;
+  $('shot_result').textContent = '正在启动模拟器 + BAAS 并回主界面截图（当前账号: ' + acc().name + '，可能需要几十秒）…';
+  try {
+    const r = await api('/api/test-game-screenshot?account=' + encodeURIComponent(acc().id), { method: 'POST' });
+    if (r.ok) {
+      $('shot_result').textContent = '✅ 截图成功: ' + r.path;
+      toast('游戏主页截图成功');
+    } else {
+      $('shot_result').textContent = '❌ ' + (r.error || '截图失败');
+      toast('游戏主页截图失败', false);
+    }
+  } catch (e) {
+    $('shot_result').textContent = '❌ ' + e.message;
+    toast('游戏主页截图失败', false);
+  }
 }
 
 async function testSimulator() {

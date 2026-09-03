@@ -28,7 +28,7 @@ baas_plus/
 ├── activity.py      # GameKee 活动数据源（httpx，参考 BlueArchive.ics）
 ├── baas_bridge.py   # BAAS 集成层（唯一允许接触 core 的模块，全部惰性导入）
 ├── store.py         # SQLite 状态存储（活动去重 + 执行记录，线程安全）
-├── notifier.py      # 邮件通知（smtplib 标准库）
+├── notifier.py      # 邮件通知（smtplib 标准库；支持 HTML + 内联游戏截图）
 └── webui/           # FastAPI 应用 + 单页前端（static/，默认 127.0.0.1:18080）
 tests/               # pytest 测试（全部 mock，不依赖 BAAS / 模拟器 / 网络 / Windows）
 data/                # 运行时数据（gitignored，含 SMTP 授权码等敏感信息）

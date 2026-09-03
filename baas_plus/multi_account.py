@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
+from html import escape as html_escape
 from typing import Callable
 
 from .activity import ActivityFetcher
@@ -81,6 +82,7 @@ class MultiAccountRunner:
             bridge=bridge,
             fetcher=fetcher,
             data_dir=str(self.config.data_path),
+            capture_screenshot=self.config.notify.attach_game_screenshot,
         )
 
     async def run_account(self, ref: str) -> tuple[str, RunResult]:
@@ -119,6 +121,23 @@ class MultiAccountRunner:
         self._notify_summary(results, elapsed)
         return results
 
+    def _to_html(self, lines: list[str]) -> str:
+        """把纯文本汇总行转成简单的 HTML 邮件正文（账号标题行加粗着色）"""
+        parts: list[str] = []
+        for line in lines:
+            if not line.strip():
+                parts.append('<div style="height:6px;"></div>')
+            elif line.startswith("━━━") and line.endswith("━━━"):
+                parts.append(f'<h3 style="margin:12px 0 4px;color:#1f3a5f;">{html_escape(line)}</h3>')
+            elif line.startswith("⚠"):
+                parts.append(f'<div style="color:#b06a00;">{html_escape(line)}</div>')
+            else:
+                parts.append(f"<div>{html_escape(line)}</div>")
+        return (
+            '<div style="font-family:Segoe UI,Microsoft YaHei,sans-serif;'
+            'font-size:13px;line-height:1.7;color:#2b313a;">' + "".join(parts) + "</div>"
+        )
+
     def _notify_summary(
         self,
         results: list[tuple[str, RunResult]],
@@ -128,6 +147,8 @@ class MultiAccountRunner:
 
         包含：总耗时、各账号执行结果（状态/任务/扫荡明细）、最终剩余体力。
         收件人取全局通知配置（notify.email.to_addrs）。
+        开启 notify.attach_game_screenshot 时，把 Engine 执行结束时截取的游戏
+        主界面画面（每个账号一张）作为内联图片嵌入邮件。
         """
         if not self.config.notify.enabled:
             return
@@ -182,4 +203,22 @@ class MultiAccountRunner:
         else:
             lines.append("最终剩余体力: 无法读取")
 
-        notifier.send(subject, "\n".join(lines))
+        # 汇总邮件正文：纯文本 + HTML 双形态；开启截图时把各账号执行完成时的
+        # 游戏主界面截图像内联图片嵌进 HTML（cid 引用），收件人无需打开模拟器
+        images: list[tuple[str, str]] = []
+        if self.config.notify.attach_game_screenshot:
+            for account_id, result in results:
+                if getattr(result, "screenshot_path", ""):
+                    images.append((f"ba_{account_id}", result.screenshot_path))
+
+        html = self._to_html(lines)
+        if images:
+            shot_blocks = ['<h3 style="margin:14px 0 6px;color:#1f3a5f;">📸 执行完成画面（游戏主界面）</h3>']
+            for cid, _ in images:
+                shot_blocks.append(
+                    f'<img src="cid:{cid}" alt="执行完成画面" width="100%" '
+                    'style="max-width:560px;border:1px solid #dde1e8;border-radius:8px;margin-bottom:8px;"/>'
+                )
+            html = html.replace("</div>", "".join(shot_blocks) + "</div>", 1)
+
+        notifier.send_html(subject, html, text="\n".join(lines), images=images)

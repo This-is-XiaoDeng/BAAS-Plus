@@ -11,6 +11,7 @@
 - POST /api/scan             手动刷新活动检测（?account=<id>）
 - POST /api/run              手动触发执行（body.account=<id> 或 "all"）
 - POST /api/test-email       发送测试邮件
+- POST /api/test-game-screenshot  测试游戏主页截图（汇总邮件内联图自检）
 """
 from __future__ import annotations
 
@@ -284,6 +285,29 @@ def create_app(config: AppConfig) -> FastAPI:
             return {"ok": True, **info}
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"BAAS 测试失败: {exc}") from exc
+
+    @app.post("/api/test-game-screenshot")
+    def test_game_screenshot(account: Optional[str] = None) -> dict[str, Any]:
+        """测试「执行完成后游戏主页截图」：启动模拟器 + BAAS → 回主界面 → 截图
+
+        与汇总邮件内联截图同一通道（桥接层 adb 帧 → PNG）；需要 BAAS + 模拟器环境。
+        """
+        from ..baas_bridge import BaasBridge
+
+        acc = resolve_account(account)
+        bridge = BaasBridge(acc)
+        out = Path(config.data_path) / "screenshots" / f"test_{acc.id}.png"
+        try:
+            adb = bridge.start_simulator()
+            bridge.create_baas(adb)
+            bridge.launch_game()
+            bridge.go_main_page()
+            ok, info = bridge.capture_screenshot(out)
+            return {"ok": ok, "path": info if ok else None, "error": None if ok else info}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "path": None, "error": f"游戏截图测试失败: {exc}"}
+        finally:
+            bridge.stop()
 
     # ---- 静态页面 ----
 

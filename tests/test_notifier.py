@@ -118,3 +118,73 @@ def test_send_failure_logs(monkeypatch):
     n = _notifier()
     assert n.send("主题", "内容") is False
     assert "smtp down" in n.last_error
+
+
+# ---- HTML + 内联图片（汇总邮件嵌游戏截图） ----
+
+def _tiny_png(tmp_path, name="shot.png"):
+    """最小可读 PNG（发送时会读字节）"""
+    p = tmp_path / name
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"1" * 32)
+    return p
+
+
+def _parse_mail():
+    """按 policy.default 解析捕获的邮件（支持 get_content / 遍历附件）"""
+    from email import policy
+    from email.parser import BytesParser
+
+    raw = FakeSMTP.sent["mail"][2]
+    return BytesParser(policy=policy.default).parsebytes(raw.encode("utf-8"))
+
+
+def test_send_html_with_inline_image(monkeypatch, tmp_path):
+    """send_html：multipart/related，HTML 以 cid 引用、图片内联嵌入"""
+    FakeSMTP.calls = 0
+    FakeSMTP.sent = {}
+    monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSMTP)
+    png = _tiny_png(tmp_path)
+    n = _notifier()
+    assert n.send_html(
+        "汇总（附截图）",
+        "<html><body><p>执行完成</p><img src='cid:ba_x'></body></html>",
+        text="执行完成",
+        images=[("ba_x", png)],
+    ) is True
+
+    msg = _parse_mail()
+    assert msg.get_content_type() == "multipart/related"
+    html = [p for p in msg.walk() if p.get_content_type() == "text/html"][0]
+    assert "cid:ba_x" in html.get_content()
+    text = [p for p in msg.walk() if p.get_content_type() == "text/plain"][0]
+    assert text.get_content() == "执行完成"
+    imgs = [p for p in msg.walk() if p.get_content_type() == "image/png"]
+    assert len(imgs) == 1
+    assert imgs[0].get("Content-ID") == "<ba_x>"
+    assert "inline" in imgs[0].get("Content-Disposition", "")
+
+
+def test_send_html_without_images_is_alternative(monkeypatch):
+    """send_html 无图片：multipart/alternative（text + html）"""
+    FakeSMTP.calls = 0
+    FakeSMTP.sent = {}
+    monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSMTP)
+    n = _notifier()
+    assert n.send_html("标题", "<b>html</b>", text="纯文本") is True
+    msg = _parse_mail()
+    assert msg.get_content_type() == "multipart/alternative"
+    types = {p.get_content_type() for p in msg.walk()}
+    assert types == {"text/plain", "text/html", "multipart/alternative"}
+
+
+def test_send_html_missing_image_skips_but_sends(monkeypatch, tmp_path):
+    """内联图片文件缺失：跳过该图并记录日志，邮件仍正常发送"""
+    FakeSMTP.calls = 0
+    FakeSMTP.sent = {}
+    monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSMTP)
+    n = _notifier()
+    ok = n.send_html("标题", "<p>x</p>", images=[("ba_x", tmp_path / "nope.png")])
+    assert ok is True  # 缺失图片不阻断发送
+    assert n.last_error == ""  # 发送成功清空错误位
+    msg = _parse_mail()
+    assert not any(p.get_content_type() == "image/png" for p in msg.walk())
