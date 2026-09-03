@@ -10,15 +10,47 @@
     --muted: #8b97ad; --accent: #4f8cff; --ok: #3ddc84; --warn: #ffb454; --err: #ff6b6b;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif; padding: 24px; }
+  [hidden] { display: none !important; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif; padding: 24px 24px 60px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
   h1 { font-size: 20px; margin-bottom: 4px; }
-  h2 { font-size: 15px; margin-bottom: 12px; color: var(--accent); }
-  .sub { color: var(--muted); margin-bottom: 24px; }
-  .gh-link { color: var(--accent); text-decoration: none; margin-left: 12px; font-size: 12.5px; }
+  h2 { font-size: 14.5px; color: var(--accent); margin: 0; }
+  .sub { color: var(--muted); }
+  .top { margin-bottom: 18px; }
+  .gh-link { color: var(--accent); text-decoration: none; margin-left: 10px; font-size: 12.5px; }
   .gh-link:hover { text-decoration: underline; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1200px; }
+
+  /* 账号栏 */
+  .account-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 10px; }
+  .acc-label { color: var(--muted); font-size: 12.5px; }
+  #account_tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .acc-tab { background: transparent; border: 1px solid var(--border); color: var(--muted);
+    padding: 5px 13px; border-radius: 16px; cursor: pointer; font-size: 12.5px; }
+  .acc-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .acc-tab.off { opacity: .55; }
+  .acc-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+  .acc-tools input[type=checkbox] { width: auto; }
+
+  /* 主操作条 */
+  .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; }
+  .actions select { width: auto; min-width: 150px; }
+  .actions .sep { width: 1px; height: 22px; background: var(--border); margin: 0 2px; }
+
+  /* 页签导航 */
+  .tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+  .tab { background: transparent; border: 1px solid transparent; border-bottom: none; color: var(--muted);
+    padding: 8px 16px; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 13px; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-color: var(--border); background: var(--panel); }
+
+  /* 页面与卡片 */
+  .page { display: flex; flex-direction: column; gap: 16px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-  .card.full { grid-column: 1 / -1; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+  .card-actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+
   label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 12px; }
   input, select, textarea {
     width: 100%; background: #10172a; border: 1px solid var(--border); color: var(--text);
@@ -31,14 +63,15 @@
   .chk label { margin: 0; display: flex; align-items: center; gap: 6px; background: #10172a;
     border: 1px solid var(--border); padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); }
   .chk input { width: auto; }
-  .hint { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
   .chk label.checked { border-color: var(--accent); color: var(--accent); }
-  .btn { border: none; border-radius: 6px; padding: 9px 18px; font-size: 13px; cursor: pointer; }
+  .hint { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+  .btn { border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
+  .btn.sm { padding: 5px 12px; font-size: 12.5px; }
   .btn.primary { background: var(--accent); color: #fff; }
   .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
   .btn.danger { background: transparent; border: 1px solid var(--err); color: var(--err); }
-  .actions { margin: 16px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .actions select { width: auto; }
+
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
   th { color: var(--muted); font-weight: 500; }
@@ -47,52 +80,82 @@
   .tag.warn { background: rgba(255,180,84,.15); color: var(--warn); }
   .tag.err { background: rgba(255,107,107,.15); color: var(--err); }
   .tag.info { background: rgba(79,140,255,.15); color: var(--accent); }
+
   .toast { position: fixed; top: 20px; right: 20px; background: var(--panel); border: 1px solid var(--border);
     padding: 12px 18px; border-radius: 8px; display: none; z-index: 10; max-width: 360px; }
   pre { background: #10172a; border: 1px solid var(--border); border-radius: 6px; padding: 10px;
-    font-size: 12px; overflow: auto; max-height: 240px; }
+    font-size: 12px; overflow: auto; max-height: 240px; margin-top: 14px; }
   .loading { color: var(--muted); }
-  /* 账号栏 */
-  .account-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; }
-  .acc-tab { background: transparent; border: 1px solid var(--border); color: var(--muted);
-    padding: 6px 14px; border-radius: 16px; cursor: pointer; font-size: 12.5px; }
-  .acc-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .acc-tab.off { opacity: .55; }
-  .acc-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
-  .acc-tools input { width: auto; }
+
+  details { margin-top: 6px; }
+  details summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+  details ol { margin: 10px 0 0 18px; padding: 0; }
+  details li { margin-bottom: 6px; }
+  code { background: #10172a; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
 </style>
 </head>
 <body>
-  <h1>🐱 BAAS-Plus 控制台</h1>
-  <div class="sub">基于 BAAS 的蔚蓝档案自动化调度器 · 配置 / 活动 / 执行记录
-    <a class="gh-link" href="https://github.com/This-is-XiaoDeng/BAAS-Plus" target="_blank" rel="noopener">📦 GitHub ↗</a>
-  </div>
+<div class="wrap">
+  <header class="top">
+    <h1>🐱 BAAS-Plus 控制台</h1>
+    <div class="sub">基于 BAAS 的蔚蓝档案自动化调度器 · 配置 / 活动 / 执行记录
+      <a class="gh-link" href="https://github.com/This-is-XiaoDeng/BAAS-Plus" target="_blank" rel="noopener">📦 GitHub ↗</a>
+    </div>
+  </header>
 
+  <!-- 账号栏（全局，所有页签可见）：切换当前账号 / 参与批量执行 / 新建 / 删除 -->
   <div class="account-bar">
-    <span style="color:var(--muted);font-size:12.5px;">账号</span>
-    <div id="account_tabs" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+    <span class="acc-label">账号</span>
+    <div id="account_tabs"></div>
     <div class="acc-tools">
       <label style="margin:0;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="acc_enabled"> 参与批量执行</label>
-      <button class="btn ghost" onclick="createAccount()">＋ 新建账号</button>
-      <button class="btn ghost" onclick="deleteAccount()" style="color:var(--err);">🗑 删除</button>
+      <button class="btn ghost sm" onclick="createAccount()">＋ 新建账号</button>
+      <button class="btn ghost sm" onclick="deleteAccount()" style="color:var(--err);">🗑 删除</button>
     </div>
   </div>
 
+  <!-- 主操作（全局）：执行 / 保存 / 重载 -->
   <div class="actions">
     <select id="run_target"></select>
     <button class="btn danger" onclick="runNow()">▶ 立即执行</button>
+    <span class="sep"></span>
     <button class="btn primary" onclick="saveConfig()">💾 保存配置</button>
     <button class="btn ghost" onclick="loadConfig()">↻ 重新加载</button>
-    <button class="btn ghost" onclick="testSimulator()">🖥 测试模拟器</button>
-    <button class="btn ghost" onclick="testBaas()">🧪 测试 BAAS</button>
-    <button class="btn ghost" onclick="testEmail()">✉ 测试邮件</button>
   </div>
-  <pre id="test_result" style="display:none; margin-bottom:16px;"></pre>
 
-  <div class="grid">
+  <!-- 页签导航 -->
+  <nav class="tabs">
+    <button class="tab active" data-tab="home" onclick="switchTab('home')">🏠 总览</button>
+    <button class="tab" data-tab="config" onclick="switchTab('config')">⚙️ 配置</button>
+    <button class="tab" data-tab="mail" onclick="switchTab('mail')">✉ 邮件通知</button>
+    <button class="tab" data-tab="records" onclick="switchTab('records')">📋 执行记录</button>
+  </nav>
+
+  <!-- ===== 总览（主页） ===== -->
+  <section id="page-home" class="page">
     <div class="card">
-      <h2>模拟器 & BAAS（当前账号）</h2>
+      <div class="card-head">
+        <h2>🎯 活动状态</h2>
+        <button class="btn ghost sm" onclick="loadActivities()">↻ 刷新活动</button>
+      </div>
+      <div id="activity_box" class="loading">加载中…</div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2>📊 最近执行记录</h2>
+        <button class="btn ghost sm" onclick="switchTab('records')">查看全部 →</button>
+      </div>
+      <table>
+        <thead><tr><th>#</th><th>账号</th><th>开始时间</th><th>状态</th><th>摘要</th></tr></thead>
+        <tbody id="home_record_rows"><tr><td colspan="5" class="loading">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ===== 配置（当前账号） ===== -->
+  <section id="page-config" class="page" hidden>
+    <div class="card">
+      <div class="card-head"><h2>🖥 模拟器 &amp; BAAS（当前账号：<span id="cfg_account_name"></span>）</h2></div>
       <label>账号名称</label><input id="acc_name" placeholder="如：主号 / 小号">
       <div class="row">
         <div><label>模拟器类型</label>
@@ -117,34 +180,21 @@
       <label>BA 游戏包名</label><input id="baas_game_package" value="com.RoamingStar.BlueArchive" placeholder="com.RoamingStar.BlueArchive">
       <label>手动指定活动模块（可选，自动映射未实现时使用）</label><input id="baas_current_activity" placeholder="如 SayBing">
       <label>活动轮播图区域 x1,y1,x2,y2（1280x720，用于 OCR 识别当前横幅）</label><input id="baas_banner_region" placeholder="1109,133,1280,281">
+      <div class="card-actions">
+        <button class="btn ghost" onclick="testSimulator()">🖥 测试模拟器</button>
+        <button class="btn ghost" onclick="testBaas()">🧪 测试 BAAS</button>
+      </div>
+      <pre id="test_result" hidden></pre>
     </div>
 
     <div class="card">
-      <h2>⏰ 定时执行指引（Windows 任务计划程序）</h2>
-      <details>
-        <summary>点击展开：创建每日定时任务的完整步骤</summary>
-        <ol style="margin:10px 0 0 18px;padding:0">
-          <li>按 <code>Win+R</code> 输入 <code>taskschd.msc</code> 回车，打开「任务计划程序」</li>
-          <li>右侧点「创建基本任务…」→ 名称随意（如 BAAS-Plus 每日）</li>
-          <li>触发器：选「每天」→ 设置执行时间（建议游戏体力重置后，如 04:05）</li>
-          <li>操作：选「启动程序」</li>
-          <li>「程序或脚本」填 Python 完整路径，例如：<br><code id="sched_program">D:\BAAS\.venv\Scripts\python.exe</code></li>
-          <li>「添加参数」填：<br><code id="sched_args">-m baas_plus.cli run</code></li>
-          <li>「起始于」填 BAAS 根目录（必须，BAAS 依赖相对路径读 config/）：<br><code id="sched_cwd">D:\BAAS</code></li>
-          <li>点「完成」后，在任务列表双击该任务 → 「条件」页：取消勾选「只有在计算机使用交流电源时才启动任务」（笔记本必改），「设置」页可勾选「如果任务运行时间超过以下时间，停止任务」设 3 小时防卡死</li>
-        </ol>
-        <p class="hint">说明：<code>run</code> 默认执行<strong>全部启用账号</strong>（每个账号独立模拟器实例，串行执行）。<br>只跑单个账号：<code>-m baas_plus.cli run --account &lt;账号名&gt;</code>。若配置不在默认位置，加 <code>--config D:\BAAS-Plus\data\config.json</code>。</p>
-      </details>
-    </div>
-
-    <div class="card">
-      <h2>勾选任务（顺序执行）</h2>
+      <h2>✅ 勾选任务（顺序执行）</h2>
       <div class="chk" id="task_list"></div>
       <p class="hint">扫荡类任务（普通/困难/活动扫荡）不在此列表，由「扫荡策略」统一按剩余体力调度。开启「没有活动时用剩余体力扫荡特别委托」后，「特别委托」也改由扫荡阶段调度。</p>
     </div>
 
     <div class="card">
-      <h2>活动策略</h2>
+      <h2>🎪 活动策略</h2>
       <div class="chk">
         <label><input type="checkbox" id="act_push_story"> 新活动自动推图（剧情）</label>
         <label><input type="checkbox" id="act_push_mission"> 新活动自动推图（任务）</label>
@@ -153,7 +203,7 @@
     </div>
 
     <div class="card">
-      <h2>扫荡策略</h2>
+      <h2>⚡ 扫荡策略</h2>
       <div class="row">
         <div><label>策略</label>
           <select id="sweep_strategy">
@@ -176,7 +226,28 @@
     </div>
 
     <div class="card">
-      <h2>邮件通知</h2>
+      <div class="card-head"><h2>⏰ 定时执行指引（Windows 任务计划程序）</h2></div>
+      <details>
+        <summary>点击展开：创建每日定时任务的完整步骤</summary>
+        <ol>
+          <li>按 <code>Win+R</code> 输入 <code>taskschd.msc</code> 回车，打开「任务计划程序」</li>
+          <li>右侧点「创建基本任务…」→ 名称随意（如 BAAS-Plus 每日）</li>
+          <li>触发器：选「每天」→ 设置执行时间（建议游戏体力重置后，如 04:05）</li>
+          <li>操作：选「启动程序」</li>
+          <li>「程序或脚本」填 Python 完整路径，例如：<br><code id="sched_program">D:\BAAS\.venv\Scripts\python.exe</code></li>
+          <li>「添加参数」填：<br><code id="sched_args">-m baas_plus.cli run</code></li>
+          <li>「起始于」填 BAAS 根目录（必须，BAAS 依赖相对路径读 config/）：<br><code id="sched_cwd">D:\BAAS</code></li>
+          <li>点「完成」后，在任务列表双击该任务 → 「条件」页：取消勾选「只有在计算机使用交流电源时才启动任务」（笔记本必改），「设置」页可勾选「如果任务运行时间超过以下时间，停止任务」设 3 小时防卡死</li>
+        </ol>
+        <p class="hint">说明：<code>run</code> 默认执行<strong>全部启用账号</strong>（每个账号独立模拟器实例，串行执行）。<br>只跑单个账号：<code>-m baas_plus.cli run --account &lt;账号名&gt;</code>。若配置不在默认位置，加 <code>--config D:\BAAS-Plus\data\config.json</code>。</p>
+      </details>
+    </div>
+  </section>
+
+  <!-- ===== 邮件通知（全局 + 当前账号覆盖） ===== -->
+  <section id="page-mail" class="page" hidden>
+    <div class="card">
+      <h2>✉ 邮件通知（全局）</h2>
       <div class="chk"><label><input type="checkbox" id="notify_enabled"> 启用通知（全局）</label></div>
       <div class="row">
         <div><label>SMTP 服务器</label><input id="mail_smtp_host" value="smtp.qq.com"></div>
@@ -189,29 +260,39 @@
       <label>收件地址（逗号分隔多个，全局）</label><input id="mail_to_addrs" placeholder="a@qq.com,b@qq.com">
       <label>本账号收件人覆盖（留空用全局；可填不同收件人）</label><input id="acc_notify_to_addrs" placeholder="留空 = 用全局收件人">
       <p class="hint">常用服务器：QQ邮箱 smtp.qq.com:465 · 163 smtp.163.com:465 · 网易免费企业邮 smtp.qiye.163.com:465（认证用客户端授权码，非登录密码；网易连续认证失败会临时锁定，请勿频繁测试）</p>
+      <div class="card-actions">
+        <button class="btn ghost" onclick="testEmail()">✉ 测试邮件</button>
+      </div>
     </div>
+  </section>
 
-    <div class="card full">
-      <h2>活动状态</h2>
-      <button class="btn ghost" onclick="loadActivities()">刷新活动</button>
-      <div id="activity_box" class="loading">加载中…</div>
-    </div>
-
-    <div class="card full">
-      <h2>执行记录</h2>
+  <!-- ===== 执行记录 ===== -->
+  <section id="page-records" class="page" hidden>
+    <div class="card">
+      <div class="card-head">
+        <h2>📋 执行记录</h2>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <select id="record_filter" style="width:auto;" onchange="loadRecords()"></select>
+          <button class="btn ghost sm" onclick="loadRecords()">↻ 刷新</button>
+        </div>
+      </div>
       <table>
         <thead><tr><th>#</th><th>账号</th><th>开始时间</th><th>状态</th><th>摘要</th></tr></thead>
         <tbody id="record_rows"><tr><td colspan="5" class="loading">加载中…</td></tr></tbody>
       </table>
     </div>
-  </div>
+  </section>
 
   <div class="toast" id="toast"></div>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
 let cfg = null;
-let selIdx = 0;  // 当前账号索引
+let selIdx = 0;        // 当前账号索引
+let curTab = 'home';   // 当前页签
+
+const TABS = ['home', 'config', 'mail', 'records'];
 
 function acc() { return cfg.accounts[selIdx]; }
 function accName(id) {
@@ -236,6 +317,27 @@ function fmt(ts) {
   if (!ts) return '-';
   return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false });
 }
+function typeLabel(t) {
+  return { event: '🎉 活动', assault: '⚔️ 总力战/大决战', card: '🎴 卡池', other: 'ℹ️ 其他' }[t] || t;
+}
+
+// ---- 页签切换（hash 路由：#home / #config / #mail / #records） ----
+
+function switchTab(name) {
+  curTab = name;
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.page').forEach(s => (s.hidden = s.id !== 'page-' + name));
+  // 进入对应页时按需刷新数据
+  if (name === 'home') { loadActivities(); loadRecords(); }
+  else if (name === 'records') loadRecords();
+  window.scrollTo(0, 0);
+}
+window.addEventListener('hashchange', () => {
+  const t = (location.hash || '#home').slice(1);
+  if (TABS.includes(t) && t !== curTab) switchTab(t);
+});
+
+// ---- 配置加载 ----
 
 async function loadConfig() {
   cfg = await api('/api/config');
@@ -243,7 +345,7 @@ async function loadConfig() {
   loadForm();
   await renderTasks();
   loadRecords();
-  loadActivities();
+  if (curTab === 'home') loadActivities();
 }
 
 function renderAccounts() {
@@ -257,6 +359,7 @@ function renderAccounts() {
     btn.onclick = () => { selIdx = i; loadConfig(); };
     bar.appendChild(btn);
   });
+  // 执行目标下拉
   const rt = $('run_target');
   rt.innerHTML = '';
   cfg.accounts.forEach(a => {
@@ -268,11 +371,23 @@ function renderAccounts() {
   const all = document.createElement('option');
   all.value = 'all'; all.textContent = '全部启用账号';
   rt.appendChild(all);
+  // 记录页账号过滤（value 为空 = 全部账号）
+  const rf = $('record_filter');
+  rf.innerHTML = '';
+  const optAll = document.createElement('option');
+  optAll.value = ''; optAll.textContent = '全部账号';
+  rf.appendChild(optAll);
+  cfg.accounts.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.id; opt.textContent = a.name;
+    rf.appendChild(opt);
+  });
   $('acc_enabled').checked = acc().enabled;
 }
 
 function loadForm() {
   const a = acc();
+  $('cfg_account_name').textContent = a.name;
   $('acc_name').value = a.name;
   $('sim_type').value = a.simulator.type;
   $('sim_instance').value = a.simulator.instance;
@@ -343,6 +458,8 @@ async function renderTasks() {
     box.appendChild(label);
   });
 }
+
+// ---- 保存配置 ----
 
 function collectConfig() {
   const checked = [...$('task_list').querySelectorAll('input:checked')].map(i => i.value);
@@ -418,6 +535,8 @@ async function saveConfig() {
   } catch (e) { toast('保存失败: ' + e.message, false); }
 }
 
+// ---- 账号操作 ----
+
 async function createAccount() {
   const name = prompt('新账号名称（留空自动命名；将复制当前账号配置，请修改模拟器实例号）');
   if (name === null) return;
@@ -441,6 +560,8 @@ async function deleteAccount() {
   } catch (e) { toast('删除失败: ' + e.message, false); }
 }
 
+// ---- 执行（完成后返回主页） ----
+
 async function runNow() {
   const target = $('run_target').value;
   const label = target === 'all' ? '全部启用账号' : accName(target);
@@ -457,8 +578,11 @@ async function runNow() {
       toast('执行完成: ' + r.summary, r.status !== 'failed');
     }
     loadRecords();
+    switchTab('home');  // 执行完成后返回主页
   } catch (e) { toast('执行失败: ' + e.message, false); }
 }
+
+// ---- 测试（模拟器 / BAAS / 邮件） ----
 
 async function testEmail() {
   try {
@@ -468,12 +592,8 @@ async function testEmail() {
   } catch (e) { toast('请求失败: ' + e.message, false); }
 }
 
-function typeLabel(t) {
-  return { event: '🎉 活动', assault: '⚔️ 总力战/大决战', card: '🎴 卡池', other: 'ℹ️ 其他' }[t] || t;
-}
-
 async function testSimulator() {
-  $('test_result').style.display = 'block';
+  $('test_result').hidden = false;
   $('test_result').textContent = '正在启动模拟器（当前账号: ' + acc().name + '，可能需要几十秒）…';
   try {
     const r = await api('/api/test-simulator?account=' + encodeURIComponent(acc().id), { method: 'POST' });
@@ -483,7 +603,7 @@ async function testSimulator() {
 }
 
 async function testBaas() {
-  $('test_result').style.display = 'block';
+  $('test_result').hidden = false;
   $('test_result').textContent = '正在验证 BAAS（当前账号: ' + acc().name + '，导入 + 配置加载）…';
   try {
     const r = await api('/api/test-baas?account=' + encodeURIComponent(acc().id), { method: 'POST' });
@@ -492,22 +612,14 @@ async function testBaas() {
   } catch (e) { $('test_result').textContent = '❌ ' + e.message; toast('BAAS 测试失败', false); }
 }
 
-async function loadRecords() {
-  try {
-    const rows = await api('/api/records?limit=30');
-    $('record_rows').innerHTML = rows.map(r => `
-      <tr><td>${r.id}</td><td>${accName(r.account)}</td><td>${fmt(r.started_at)}</td>
-      <td><span class="tag ${r.status === 'success' ? 'ok' : r.status === 'failed' ? 'err' : 'warn'}">${r.status}</span></td>
-      <td title="${(r.detail && JSON.stringify(r.detail) || '').replace(/"/g, '&quot;')}">${r.summary || ''}</td></tr>`).join('');
-  } catch (e) { $('record_rows').innerHTML = `<tr><td colspan="5">加载失败: ${e.message}</td></tr>`; }
-}
+// ---- 活动状态 ----
 
 async function loadActivities() {
   try {
     const data = await api('/api/activities?account=' + encodeURIComponent(acc().id));
     const seen = new Set(data.seen_keys);
     const now = Date.now() / 1000;
-    const render = (events, isSweepable) => events.length ? `
+    const render = (events) => events.length ? `
       <table><thead><tr><th>类型</th><th>标题</th><th>开始</th><th>结束</th><th>状态</th></tr></thead>
       <tbody>${events.map(e => `
         <tr><td>${typeLabel(e.event_type)}</td><td>${e.title}</td>
@@ -517,12 +629,40 @@ async function loadActivities() {
       </tbody></table>` : '<div class="loading">无</div>';
     const box = $('activity_box');
     box.innerHTML =
-      '<div class="sub">🎯 可扫荡活动（账号: ' + data.account_name + '，决定「有活动优先扫活动」）</div>' + render(data.current, true) +
-      '<div class="sub">' + render(data.other, false) + '</div>';
+      '<div class="sub">🎯 可扫荡活动（账号: ' + data.account_name + '，决定「有活动优先扫活动」）</div>' + render(data.current) +
+      '<div class="sub" style="margin-top:10px;">其他（总力战/卡池等，不参与扫荡）</div>' + render(data.other);
   } catch (e) { $('activity_box').textContent = '加载失败: ' + e.message; }
 }
 
-loadConfig();
+// ---- 执行记录（主页最近 10 条 + 记录页完整列表） ----
+
+function rowHtml(r) {
+  return `<tr><td>${r.id}</td><td>${accName(r.account)}</td><td>${fmt(r.started_at)}</td>
+    <td><span class="tag ${r.status === 'success' ? 'ok' : r.status === 'failed' ? 'err' : 'warn'}">${r.status}</span></td>
+    <td title="${(r.detail && JSON.stringify(r.detail) || '').replace(/"/g, '&quot;')}">${r.summary || ''}</td></tr>`;
+}
+
+async function loadRecords() {
+  const filter = $('record_filter').value || '';
+  const q = '/api/records?limit=50' + (filter ? '&account=' + encodeURIComponent(filter) : '');
+  const failed = `<tr><td colspan="5">加载失败</td></tr>`;
+  try {
+    const rows = await api(q);
+    $('home_record_rows').innerHTML = rows.slice(0, 10).map(rowHtml).join('') || failed;
+    $('record_rows').innerHTML = rows.map(rowHtml).join('') || failed;
+  } catch (e) {
+    $('home_record_rows').innerHTML = `<tr><td colspan="5">加载失败: ${e.message}</td></tr>`;
+    $('record_rows').innerHTML = `<tr><td colspan="5">加载失败: ${e.message}</td></tr>`;
+  }
+}
+
+// ---- 启动：按 hash 定位页签后加载数据 ----
+
+(function init() {
+  const t = (location.hash || '#home').slice(1);
+  if (TABS.includes(t) && t !== 'home') switchTab(t);
+  loadConfig();
+})();
 </script>
 </body>
 </html>
