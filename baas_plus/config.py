@@ -218,6 +218,9 @@ class AppConfig(BaseModel):
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
     # 数据目录（活动状态、执行记录 SQLite 与配置文件的父目录）
     data_dir: str = "data"
+    # 多次执行：全部账号执行完一轮后立即开始下一轮（无间隔），循环 run_times 轮。
+    # 默认 1 = 只执行一轮（与旧版行为一致）；CLI 可用 --times 覆盖，WebUI 在主操作条设置。
+    run_times: int = Field(default=1, ge=1)
     accounts: list[AccountConfig] = Field(default_factory=lambda: [AccountConfig()])
 
     # ---- 兼容属性：代理到默认账号（accounts[0]）----

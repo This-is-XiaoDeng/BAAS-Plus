@@ -9,7 +9,7 @@
 - GET  /api/records          执行记录（?account=<id> 过滤）
 - GET  /api/activities       活动状态（?account=<id>，默认第一个账号）
 - POST /api/scan             手动刷新活动检测（?account=<id>）
-- POST /api/run              手动触发执行（body.account=<id> 或 "all"）
+- POST /api/run              手动触发执行（body.account=<id> 或 "all"；轮数取全局配置 run_times）
 - POST /api/test-email       发送测试邮件
 - POST /api/test-game-screenshot  测试游戏主页截图（汇总邮件内联图自检）
 """
@@ -201,53 +201,85 @@ def create_app(config: AppConfig) -> FastAPI:
     async def run(body: Optional[RunBody] = None) -> dict[str, Any]:
         runner = MultiAccountRunner(config, store=store)
         ref = (body.account if body else None) or "all"
+        # 多次执行：轮数取全局配置 run_times，全部目标账号执行完一轮后立即开始下一轮
+        times = max(1, config.run_times)
         if ref == "all":
             enabled = runner.enabled_accounts()
             if not enabled:
                 raise HTTPException(status_code=400, detail="没有启用状态的账号")
-            # 多账号串行：每账号 600s 上限，总超时按账号数放大
-            timeout = 600 * max(1, len(enabled))
+            # 多账号 × 多轮串行：每账号每轮 600s 上限，总超时按账号数 × 轮数放大
+            timeout = 600 * max(1, len(enabled)) * times
             try:
-                results = await asyncio.wait_for(runner.run_all(), timeout=timeout)
+                rounds = await asyncio.wait_for(runner.run_all(), timeout=timeout)
             except asyncio.TimeoutError:
                 logger.error("批量执行超时（>%ss）", timeout)
                 raise HTTPException(
                     status_code=408,
-                    detail=f"批量执行超时（>{timeout}s）：多账号串行总时长超限，请查看 data/baas_plus.log 定位卡点",
+                    detail=f"批量执行超时（>{timeout}s）：{len(enabled)} 个账号 × {times} 轮串行总时长超限，请查看 data/baas_plus.log 定位卡点",
                 ) from None
-            failed = [r for _, r in results if r.status == "failed"]
+            flat = [(aid, r) for round_results in rounds for aid, r in round_results]
+            failed = [r for _, r in flat if r.status == "failed"]
             status = "failed" if failed else (
-                "success" if all(r.status == "success" for _, r in results) else "partial"
+                "success" if all(r.status == "success" for _, r in flat) else "partial"
             )
             summary = "；".join(
-                f"[{runner.get_account(aid).name}] {r.summary}" for aid, r in results
+                f"[第{round_no}轮][{runner.get_account(aid).name}] {r.summary}"
+                for round_no, round_results in enumerate(rounds, start=1)
+                for aid, r in round_results
             )
             return {
                 "status": status,
                 "summary": summary,
-                "results": [
-                    {"account": aid, "status": r.status, "summary": r.summary}
-                    for aid, r in results
+                "times": times,
+                "rounds": [
+                    {
+                        "round": round_no,
+                        "results": [
+                            {"account": aid, "status": r.status, "summary": r.summary}
+                            for aid, r in round_results
+                        ],
+                    }
+                    for round_no, round_results in enumerate(rounds, start=1)
                 ],
             }
         acc = resolve_account(ref)
         try:
-            # 600s 超时：BAAS 初始化（OCR 服务器/设备连接）卡住时返回明确错误，
-            # 而不是让请求无限挂起；超时后 run_once 协程仍在后台，但不阻塞 UI
-            _, result = await asyncio.wait_for(runner.run_account(acc.id), timeout=600)
+            # 600s × 轮数超时：BAAS 初始化（OCR 服务器/设备连接）卡住时返回明确错误，
+            # 而不是让请求无限挂起；超时后协程仍在后台，但不阻塞 UI
+            rounds = await asyncio.wait_for(
+                runner.run_accounts([acc], times), timeout=600 * times
+            )
         except asyncio.TimeoutError:
-            logger.error("执行超时（>600s）：大概率卡在 BAAS 初始化（OCR 服务器/设备连接）")
+            logger.error("执行超时（>%ss）：大概率卡在 BAAS 初始化（OCR 服务器/设备连接）", 600 * times)
             raise HTTPException(
                 status_code=408,
                 detail="执行超时：大概率卡在 BAAS 初始化（OCR 服务器/设备连接），请查看 data/baas_plus.log 定位卡点",
             ) from None
+        flat = [(acc.id, r) for round_results in rounds for _, r in round_results]
+        failed = [r for _, r in flat if r.status == "failed"]
+        status = "failed" if failed else (
+            "success" if all(r.status == "success" for _, r in flat) else "partial"
+        )
+        summary = "；".join(
+            f"[第{round_no}轮] {r.summary}"
+            for round_no, round_results in enumerate(rounds, start=1)
+            for _, r in round_results
+        )
         return {
             "account": acc.id,
-            "status": result.status,
-            "summary": result.summary,
-            "executed_tasks": result.executed_tasks,
-            "swept": result.swept,
-            "new_activities": [e.__dict__ for e in result.new_activities],
+            "status": status,
+            "summary": summary,
+            "times": times,
+            "rounds": [
+                {
+                    "round": round_no,
+                    "results": [
+                        {"account": acc.id, "status": r.status, "summary": r.summary}
+                        for _, r in round_results
+                    ],
+                }
+                for round_no, round_results in enumerate(rounds, start=1)
+            ],
         }
 
     # ---- 邮件 ----

@@ -129,8 +129,10 @@ async def test_run_all_serial_order(tmp_path):
         return b
 
     runner = make_runner(config, tmp_path, bridge_factory=factory)
-    results = await runner.run_all()
-    # 返回顺序 = 配置顺序
+    rounds = await runner.run_all()
+    # 默认 run_times=1：返回单轮，轮内顺序 = 配置顺序
+    assert len(rounds) == 1
+    results = rounds[0]
     assert [aid for aid, _ in results] == [a.id for a in config.accounts]
     # 每个账号独立 bridge 且都执行了
     assert len(bridges) == 2
@@ -153,10 +155,10 @@ async def test_disabled_account_skipped(tmp_path):
         ],
     )
     runner = make_runner(config, tmp_path)
-    results = await runner.run_all()
-    ids = [aid for aid, _ in results]
+    rounds = await runner.run_all()
+    ids = [aid for aid, _ in rounds[0]]
     assert config.accounts[1].id not in ids
-    assert len(results) == 2
+    assert len(ids) == 2
 
 
 @pytest.mark.asyncio
@@ -181,7 +183,8 @@ async def test_failure_isolation(tmp_path):
         return BoomBridge() if acc.name == "A" else FakeBridge()
 
     runner = make_runner(config, tmp_path, bridge_factory=factory)
-    results = await runner.run_all()
+    rounds = await runner.run_all()
+    results = rounds[0]
     by_name = {runner.get_account(aid).name: (aid, r) for aid, r in results}
     assert by_name["A"][1].status == "failed"
     assert by_name["B"][1].status == "success"
@@ -325,7 +328,7 @@ def test_notify_summary_embeds_game_screenshots(tmp_path, monkeypatch):
         (config.accounts[0].id, RunResult(status="success", summary="全部任务完成", ap_before_sweep=120, screenshot_path=str(png))),
         (config.accounts[1].id, RunResult(status="failed", summary="BAAS 初始化失败")),
     ]
-    runner._notify_summary(results, 65.0)
+    runner._notify_summary([results], 65.0)  # 单轮（run_times=1）
 
     msg = _parse_sent_mail()
     assert msg.get_content_type() == "multipart/related"  # 内联图片结构
@@ -353,8 +356,171 @@ def test_notify_summary_skips_screenshots_when_disabled(tmp_path, monkeypatch):
     runner = make_runner(config, tmp_path)
     png = _fake_png(tmp_path)
     results = [(config.accounts[0].id, RunResult(status="success", summary="ok", screenshot_path=str(png)))]
-    runner._notify_summary(results, 5.0)
+    runner._notify_summary([results], 5.0)
 
     msg = _parse_sent_mail()
     assert msg.get_content_type() == "multipart/alternative"  # 无图片 → text+html 双形态
     assert not any(p.get_content_type() == "image/png" for p in msg.walk())
+
+
+# ---- 多次执行（run_times） ----
+
+
+@pytest.mark.asyncio
+async def test_run_all_multiple_rounds(tmp_path):
+    """多次执行：run_times=N 时每轮按账号顺序执行，一轮结束立即开始下一轮（无间隔）"""
+    config = make_config(
+        tmp_path,
+        [
+            {"name": "主号", "baas": {"tasks": []}},
+            {"name": "小号", "baas": {"tasks": []}},
+        ],
+    )
+    config.run_times = 3
+    launches: list[str] = []  # 记录每轮每个账号的 launch_game（无任务时唯一执行动作）
+
+    class TraceBridge(FakeBridge):
+        def __init__(self, name, **kw):
+            super().__init__(**kw)
+            self.name = name
+
+        def launch_game(self):
+            launches.append(self.name)
+            return True
+
+    def factory(acc):
+        return TraceBridge(acc.name)
+
+    runner = make_runner(config, tmp_path, bridge_factory=factory)
+    rounds = await runner.run_all()
+    assert len(rounds) == 3  # 3 轮
+    for round_results in rounds:
+        assert [aid for aid, _ in round_results] == [a.id for a in config.accounts]
+    # 轮内账号顺序 + 轮间立即衔接：主号,小号 × 3
+    assert launches == ["主号", "小号", "主号", "小号", "主号", "小号"]
+    # 执行记录按账号 × 轮次写入
+    records = runner.store.list_records()
+    assert len(records) == 6
+    # 单账号失败不阻塞下一轮（失败隔离跨轮生效）
+    assert all(r.status == "success" for rr in rounds for _, r in rr)
+
+
+@pytest.mark.asyncio
+async def test_run_all_multiple_rounds_failure_continues(tmp_path):
+    """某轮某账号失败：本轮其余账号照常执行，下一轮照常开始"""
+
+    config = make_config(
+        tmp_path,
+        [
+            {"name": "主号", "baas": {"tasks": []}},
+            {"name": "小号", "baas": {"tasks": []}},
+        ],
+    )
+    config.run_times = 2
+    starts: dict[str, int] = {}
+    calls: list[str] = []
+
+    def factory(acc):
+        calls.append(acc.name)
+        starts[acc.name] = starts.get(acc.name, 0) + 1
+
+        class FlakyBridge(FakeBridge):
+            def start_simulator(self):
+                if acc.name == "小号" and starts[acc.name] >= 2:
+                    raise RuntimeError("第二轮模拟器故障")
+                return "127.0.0.1:16384"
+
+        return FlakyBridge()
+
+    runner = make_runner(config, tmp_path, bridge_factory=factory)
+    rounds = await runner.run_all()
+    assert len(rounds) == 2
+    round1 = dict(rounds[0])
+    round2 = dict(rounds[1])
+    assert round1[config.accounts[0].id].status == "success"
+    assert round1[config.accounts[1].id].status == "success"
+    assert round2[config.accounts[0].id].status == "success"
+    assert round2[config.accounts[1].id].status == "failed"  # 第二轮失败隔离，不中断
+    # 第二轮仍然执行（两轮各自创建 bridge）
+    assert calls.count("主号") == 2 and calls.count("小号") == 2
+
+
+@pytest.mark.asyncio
+async def test_run_accounts_times_override(tmp_path):
+    """run_accounts 的 times 参数可覆盖配置（CLI --times / WebUI 单账号多次执行）"""
+    config = make_config(tmp_path, [{"name": "A", "baas": {"tasks": []}}])
+    config.run_times = 1
+    runner = make_runner(config, tmp_path)
+    rounds = await runner.run_accounts(config.accounts, times=2)
+    assert len(rounds) == 2
+    assert rounds[0][0][0] == config.accounts[0].id
+    assert rounds[1][0][0] == config.accounts[0].id
+    # 不传 times 时用配置 run_times（默认 1）
+    rounds_default = await runner.run_accounts(config.accounts)
+    assert len(rounds_default) == 1
+
+
+def test_notify_summary_multiple_rounds_format(tmp_path, monkeypatch):
+    """多次执行汇总邮件：每轮一个「第 N 轮」分节，状态行统计全部轮次"""
+    import smtplib
+
+    from baas_plus.engine import RunResult
+
+    FakeSMTP.sent = {}
+    monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSMTP)
+    config = _notify_config(tmp_path, with_screenshot=False)
+    runner = make_runner(config, tmp_path)
+    rounds = [
+        [
+            (config.accounts[0].id, RunResult(status="success", summary="第1轮 主号完成", ap_before_sweep=90)),
+            (config.accounts[1].id, RunResult(status="success", summary="第1轮 小号完成", ap_before_sweep=60)),
+        ],
+        [
+            (config.accounts[0].id, RunResult(status="success", summary="第2轮 主号完成", ap_before_sweep=30)),
+            (config.accounts[1].id, RunResult(status="failed", summary="第2轮 小号失败")),
+        ],
+    ]
+    runner._notify_summary(rounds, 7250.0)  # 约 2h
+
+    msg = _parse_sent_mail()
+    assert "2 轮" in str(msg["Subject"])  # 主题带轮数
+    assert "1/4 次账号执行失败" in str(msg["Subject"])
+    text = [p for p in msg.walk() if p.get_content_type() == "text/plain"][0].get_content()
+    assert "执行轮数: 2（每轮 2 个账号，共 4 次账号执行）" in text
+    assert "成功: 3，失败: 1" in text
+    assert "═══ 第 1 轮 ═══" in text
+    assert "═══ 第 2 轮 ═══" in text
+    assert "第1轮 主号完成" in text and "第2轮 小号失败" in text
+    assert "最终剩余体力: 30" in text  # 取最后一轮最后一个成功执行账号的体力
+    html = [p for p in msg.walk() if p.get_content_type() == "text/html"][0].get_content()
+    assert "第 1 轮" in html and "第 2 轮" in html
+
+
+def test_notify_summary_screenshot_only_final_round(tmp_path, monkeypatch):
+    """开启截图且多轮时：每个账号只内联最后一轮的截图（回退到有截图的那一轮）"""
+    import smtplib
+
+    from baas_plus.engine import RunResult
+
+    FakeSMTP.sent = {}
+    monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSMTP)
+    config = _notify_config(tmp_path, with_screenshot=True)
+    runner = make_runner(config, tmp_path)
+    png = _fake_png(tmp_path)
+    rounds = [
+        [
+            (config.accounts[0].id, RunResult(status="success", summary="ok", screenshot_path=str(png))),
+            (config.accounts[1].id, RunResult(status="success", summary="ok", screenshot_path=str(png))),
+        ],
+        [
+            (config.accounts[0].id, RunResult(status="success", summary="ok", screenshot_path=str(png))),
+            (config.accounts[1].id, RunResult(status="failed", summary="失败")),  # 第二轮失败无截图
+        ],
+    ]
+    runner._notify_summary(rounds, 10.0)
+
+    msg = _parse_sent_mail()
+    imgs = [p for p in msg.walk() if p.get_content_type() == "image/png"]
+    assert len(imgs) == 2  # 每账号恰好一张（小号回退到第 1 轮）
+    cids = {img.get("Content-ID") for img in imgs}
+    assert cids == {f"<ba_{config.accounts[0].id}>", f"<ba_{config.accounts[1].id}>"}

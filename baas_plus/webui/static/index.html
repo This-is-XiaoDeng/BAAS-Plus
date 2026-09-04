@@ -117,6 +117,9 @@
   <!-- 主操作（全局）：执行 / 保存 / 重载 -->
   <div class="actions">
     <select id="run_target"></select>
+    <label style="margin:0;display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);" title="执行轮数：全部目标账号执行完一轮后立即执行下一轮">
+      轮数 <input type="number" id="run_times" min="1" value="1" style="width:58px;padding:6px 8px;">
+    </label>
     <button class="btn danger" onclick="runNow()">▶ 立即执行</button>
     <span class="sep"></span>
     <button class="btn primary" onclick="saveConfig()">💾 保存配置</button>
@@ -246,7 +249,7 @@
           <li>「起始于」填 BAAS 根目录（必须，BAAS 依赖相对路径读 config/）：<br><code id="sched_cwd">D:\BAAS</code></li>
           <li>点「完成」后，在任务列表双击该任务 → 「条件」页：取消勾选「只有在计算机使用交流电源时才启动任务」（笔记本必改），「设置」页可勾选「如果任务运行时间超过以下时间，停止任务」设 3 小时防卡死</li>
         </ol>
-        <p class="hint">说明：<code>run</code> 默认执行<strong>全部启用账号</strong>（每个账号独立模拟器实例，串行执行）。<br>只跑单个账号：<code>-m baas_plus.cli run --account &lt;账号名&gt;</code>。若配置不在默认位置，加 <code>--config D:\BAAS-Plus\data\config.json</code>。</p>
+        <p class="hint">说明：<code>run</code> 默认执行<strong>全部启用账号</strong>（每个账号独立模拟器实例，串行执行）。<br>只跑单个账号：<code>-m baas_plus.cli run --account &lt;账号名&gt;</code>。<strong>多次执行</strong>：在顶部主操作条设置「轮数」（全部账号执行完一轮后立即开始下一轮，无间隔），或命令行加 <code>--times N</code> 覆盖。<br>若配置不在默认位置，加 <code>--config D:\BAAS-Plus\data\config.json</code>。</p>
       </details>
     </div>
   </section>
@@ -423,6 +426,7 @@ function loadForm() {
   $('sweep_special_task_times').value = a.sweep.special_task_times || '0,max';
   $('acc_notify_to_addrs').value = (a.notify_to_addrs || []).join(',');
   // 全局项（不在账号内）
+  $('run_times').value = cfg.run_times || 1;
   $('notify_enabled').checked = cfg.notify.enabled;
   $('notify_game_screenshot').checked = !!cfg.notify.attach_game_screenshot;
   $('mail_smtp_host').value = cfg.notify.email.smtp_host;
@@ -513,6 +517,7 @@ function collectConfig() {
   return {
     webui: cfg.webui,
     data_dir: cfg.data_dir,
+    run_times: Math.max(1, parseInt($('run_times').value) || 1),
     notify: {
       enabled: $('notify_enabled').checked,
       attach_game_screenshot: $('notify_game_screenshot').checked,
@@ -577,14 +582,19 @@ async function deleteAccount() {
 async function runNow() {
   const target = $('run_target').value;
   const label = target === 'all' ? '全部启用账号' : accName(target);
-  if (!confirm('确认立即执行「' + label + '」？（会启动模拟器）')) return;
+  const times = Math.max(1, parseInt($('run_times').value) || 1);
+  const runLabel = times > 1 ? ` × ${times} 轮（一轮完成立即下一轮）` : '';
+  if (!confirm('确认立即执行「' + label + '」' + runLabel + '？（会启动模拟器）')) return;
   toast('执行中，请稍候…');
   try {
     const r = await api('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account: target }) });
-    if (r.results) {
-      // 批量执行：逐账号展示
-      const lines = r.results.map(x => `[${accName(x.account)}] ${x.status}: ${x.summary}`).join('\n');
-      toast('批量执行完成');
+    if (r.rounds) {
+      // 多轮/批量执行：按轮次逐账号展示
+      const lines = r.rounds.map(rd => {
+        const head = r.rounds.length > 1 ? `第 ${rd.round} 轮:\n` : '';
+        return head + rd.results.map(x => `  [${accName(x.account)}] ${x.status}: ${x.summary}`).join('\n');
+      }).join('\n\n');
+      toast('执行完成' + (r.times > 1 ? `（${r.times} 轮）` : ''), r.status !== 'failed');
       alert(lines);
     } else {
       toast('执行完成: ' + r.summary, r.status !== 'failed');

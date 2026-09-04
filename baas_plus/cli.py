@@ -3,6 +3,7 @@
 用法：
     python -m baas_plus.cli run                      # 执行全部启用账号
     python -m baas_plus.cli run --account <id|name>  # 只执行指定账号
+    python -m baas_plus.cli run --times <N>          # 多次执行（N 轮，一轮结束立即开始下一轮）
     python -m baas_plus.cli webui                    # 启动 WebUI（配置 + 执行记录）
     python -m baas_plus.cli scan                     # 仅活动检测（打印新活动，不执行）
     python -m baas_plus.cli test-email               # 发送测试邮件
@@ -38,33 +39,42 @@ def _target_accounts(runner: MultiAccountRunner, account: str | None) -> list:
     return runner.enabled_accounts()
 
 
-def cmd_run(config_path: str | None, account: str | None = None) -> int:
+def cmd_run(config_path: str | None, account: str | None = None, times: int | None = None) -> int:
     config = load_config(config_path)
     runner = MultiAccountRunner(config)
-    logger.info("BAAS-Plus %s 开始执行（账号数=%d）", __version__, len(runner.enabled_accounts()))
+    rounds_no = max(1, times or config.run_times)
+    logger.info(
+        "BAAS-Plus %s 开始执行（账号数=%d，执行轮数=%d）",
+        __version__,
+        len(runner.enabled_accounts()),
+        rounds_no,
+    )
 
     async def _run() -> list:
         if account:
-            return [await runner.run_account(account)]
-        return await runner.run_all()
+            return await runner.run_accounts([runner.get_account(account)], times)
+        return await runner.run_all(times)
 
     try:
-        results = asyncio.run(_run())
+        rounds = asyncio.run(_run())
     except Exception as exc:  # noqa: BLE001
         logger.exception("执行异常")
         return 1
 
     all_ok = True
-    for account_id, result in results:
-        name = runner.get_account(account_id).name
-        print(f"\n===== 账号 [{name}] 执行结果: {result.status} =====")
-        print(result.summary)
-        for task in result.executed_tasks:
-            print(f"  ✓ {task}")
-        for swept in result.swept:
-            print(f"  ⚡ 扫荡 {swept}")
-        if result.status == "failed":
-            all_ok = False
+    for round_no, round_results in enumerate(rounds, start=1):
+        if len(rounds) > 1:
+            print(f"\n========== 第 {round_no}/{len(rounds)} 轮 ==========")
+        for account_id, result in round_results:
+            name = runner.get_account(account_id).name
+            print(f"\n===== 账号 [{name}] 执行结果: {result.status} =====")
+            print(result.summary)
+            for task in result.executed_tasks:
+                print(f"  ✓ {task}")
+            for swept in result.swept:
+                print(f"  ⚡ 扫荡 {swept}")
+            if result.status == "failed":
+                all_ok = False
     return 0 if all_ok else 1
 
 
@@ -177,11 +187,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["run", "scan", "webui", "test-email", "test-ocr", "reset-push"])
     parser.add_argument("--config", default=None, help="配置文件路径（默认 data/config.json）")
     parser.add_argument("--account", default=None, help="指定账号（id 或名称）；缺省执行全部启用账号")
+    parser.add_argument("--times", type=int, default=None, help="多次执行轮数（缺省用配置 run_times；1 = 只执行一轮）")
     parser.add_argument("--key", default=None, help="reset-push: 只重置指定活动 key")
     args = parser.parse_args(argv)
 
     if args.command == "run":
-        return cmd_run(args.config, args.account)
+        return cmd_run(args.config, args.account, args.times)
     if args.command == "scan":
         return cmd_scan(args.config, args.account)
     if args.command == "webui":

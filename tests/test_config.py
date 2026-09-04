@@ -219,6 +219,29 @@ def test_special_task_sweep_roundtrip(tmp_path):
     assert loaded.sweep.special_task_times == "max,0"
 
 
+def test_run_times_default_and_roundtrip(tmp_path):
+    """多次执行轮数：默认 1（兼容旧配置），保存/加载往返，非法值（<1）拒绝"""
+    assert AppConfig().run_times == 1
+    config = AppConfig(run_times=3)
+    assert config.run_times == 3
+    path = save_config(config, str(tmp_path / "config.json"))
+    loaded = load_config(str(path))
+    assert loaded.run_times == 3
+    with pytest.raises(ValueError):
+        AppConfig(run_times=0)  # ge=1
+
+
+def test_legacy_config_run_times_defaults_to_one(tmp_path):
+    """旧版 config.json 无 run_times 字段 → 默认 1（向后兼容）"""
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"baas": {"server": "cn"}, "data_dir": str(tmp_path)}),
+        encoding="utf-8",
+    )
+    config = load_config(str(path))
+    assert config.run_times == 1
+
+
 @pytest.mark.parametrize("times", ["0,max", "max,0", "3,5", "max,max", "0, 1"])
 def test_special_task_times_valid(times):
     account = AccountConfig(sweep={"special_task_times": times})
