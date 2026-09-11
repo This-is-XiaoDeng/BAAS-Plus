@@ -26,6 +26,7 @@ baas_plus/
 ├── log_setup.py     # baas_plus.* 独立日志（文件 + 控制台，幂等）
 ├── engine.py        # 核心编排：模拟器 → 活动检测 → 推图 → 日常任务 → 按体力扫荡 → 通知
 ├── activity.py      # GameKee 活动数据源（httpx，参考 BlueArchive.ics）
+├── activity_assets.py # 活动截图资源库（当前服缺模板时按坐标框裁剪/自校验/落盘，不 import core）
 ├── baas_bridge.py   # BAAS 集成层（唯一允许接触 core 的模块，全部惰性导入）
 ├── store.py         # SQLite 状态存储（活动去重 + 执行记录，线程安全）
 ├── notifier.py      # 邮件通知（smtplib 标准库；支持 HTML + 内联游戏截图）

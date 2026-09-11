@@ -120,20 +120,25 @@ class Engine:
 
         优先级：手动配置 current_activity > BAAS 记录的 current_game_activity
         （BAAS 记录可能是 BAAS 自己检测或之前运行写入的，同样可信）。
+
+        可用性判定与资源注入统一交给 bridge.ensure_activity_resources：BAAS 自带
+        当前服资源时直接可用；只有本地资源库（WebUI 配置时补齐）时才注入，
+        不满足则返回带原因的说明（区分 BAAS 版本过旧 / 当前服无资源 / 未准备）。
         """
         if self.config.baas.current_activity:
             manual = self.config.baas.current_activity
-            if self.bridge.activity_module_available(manual):
+            ok, why = self.bridge.ensure_activity_resources(manual)
+            if ok:
                 return manual
-            logger.warning(
-                "手动配置的活动模块 %s 不在当前服资源白名单（缺少 BAAS 截图模板），跳过推图",
-                manual,
-            )
+            logger.warning("手动配置的活动模块 %s 不可用：%s，跳过推图", manual, why)
             return None
         recorded = self.bridge.get_current_activity()
-        if recorded and self.bridge.activity_module_available(recorded):
-            logger.info("使用 BAAS 记录的活动模块: %s", recorded)
-            return recorded
+        if recorded:
+            ok, why = self.bridge.ensure_activity_resources(recorded)
+            if ok:
+                logger.info("使用 BAAS 记录的活动模块: %s（%s）", recorded, why)
+                return recorded
+            logger.warning("BAAS 记录的活动模块 %s 不可用：%s", recorded, why)
         return None
 
     def push_new_activity(self, event: GameEvent) -> list[str]:
@@ -177,19 +182,23 @@ class Engine:
         """
         if self.config.baas.current_activity:
             manual = self.config.baas.current_activity
-            if self.bridge.activity_module_available(manual):
+            ok, why = self.bridge.ensure_activity_resources(manual)
+            if ok:
                 return manual, None
-            logger.warning(
-                "手动配置的活动模块 %s 不在当前服资源白名单（缺少 BAAS 截图模板），"
-                "跳过活动扫荡",
-                manual,
-            )
+            logger.warning("手动配置的活动模块 %s 不可用：%s，跳过活动扫荡", manual, why)
             return None
         recorded = self.bridge.get_current_activity()
-        if recorded and self.bridge.activity_module_available(recorded):
-            logger.info("活动扫荡选中模块（BAAS 记录）: %s", recorded)
-            return recorded, None
+        if recorded:
+            ok, why = self.bridge.ensure_activity_resources(recorded)
+            if ok:
+                logger.info("活动扫荡选中模块（BAAS 记录）: %s（%s）", recorded, why)
+                return recorded, None
+            logger.warning("BAAS 记录的活动模块 %s 不可用：%s", recorded, why)
         modules = self.bridge.list_activity_modules()
+        # 本地补齐（WebUI 活动资源）的模块也参与自动匹配
+        for patched in self.bridge.list_patched_modules():
+            if patched not in modules:
+                modules.append(patched)
         if not modules:
             logger.warning("无法扫描 BAAS 活动模块列表")
             return None

@@ -9,6 +9,9 @@
 - GET  /api/records          执行记录（?account=<id> 过滤）
 - GET  /api/activities       活动状态（?account=<id>，默认第一个账号）
 - POST /api/scan             手动刷新活动检测（?account=<id>）
+- GET  /api/activity-resources     活动资源自检（?account=<id>&module=<模块>）
+- POST /api/activity-resources/frame  上传现场截图补齐活动模板（?kind=main|menu）
+- DELETE /api/activity-resources   删除本地补齐的活动资源（还原）
 - POST /api/run              手动触发执行（body.account=<id> 或 "all"；轮数取全局配置 run_times）
 - POST /api/test-email       发送测试邮件
 - POST /api/test-game-screenshot  测试游戏主页截图（汇总邮件内联图自检）
@@ -21,7 +24,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -82,13 +85,35 @@ def create_app(config: AppConfig) -> FastAPI:
             try:
                 from ..baas_bridge import BaasBridge
 
-                bridge = BaasBridge(default_account)
+                bridge = BaasBridge(default_account, data_dir=config.data_path)
                 sync = bridge.sync_sweep_from_baas()
                 if sync.get("applied"):
                     save_config(config)
             except Exception as exc:  # noqa: BLE001
                 sync = {"ok": False, "reason": str(exc)}
-        return {"ok": True, "sync": sync}
+        # 活动资源检查在**配置时**完成（不留给运行时报警）：开启了资源注入或手动
+        # 指定了活动模块的账号，保存时立即给出资源自检报告（缺什么、该怎么补）。
+        resource_reports = []
+        for acc in config.accounts:
+            if not (
+                acc.activity.inject_activity_resources or acc.baas.current_activity
+            ):
+                continue
+            try:
+                from ..baas_bridge import BaasBridge
+
+                resource_reports.append(
+                    {
+                        "account": acc.id,
+                        "account_name": acc.name,
+                        "report": BaasBridge(acc, data_dir=config.data_path).activity_resource_report(),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                resource_reports.append(
+                    {"account": acc.id, "account_name": acc.name, "error": str(exc)}
+                )
+        return {"ok": True, "sync": sync, "resource_reports": resource_reports}
 
     @app.get("/api/tasks")
     def get_tasks() -> list[dict[str, str]]:
@@ -175,6 +200,68 @@ def create_app(config: AppConfig) -> FastAPI:
             "seen_keys": sorted(seen),
             "new": [e.__dict__ for e in current if e.key not in seen],
         }
+
+    # ---- 活动资源（当前服截图模板缺失时的检查/补齐）----
+
+    def _activity_bridge(acc: AccountConfig):
+        """构造用于活动资源检查的 bridge（数据目录跟随全局 data_dir）"""
+        from ..baas_bridge import BaasBridge
+
+        return BaasBridge(acc, data_dir=config.data_path)
+
+    @app.get("/api/activity-resources")
+    def get_activity_resources(
+        account: Optional[str] = None, module: Optional[str] = None
+    ) -> dict[str, Any]:
+        """活动资源自检报告（只读；配置页「活动策略 → 活动资源」展示）"""
+        acc = resolve_account(account)
+        try:
+            bridge = _activity_bridge(acc)
+            return {"ok": True, "report": bridge.activity_resource_report(module)}
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"活动资源检查失败: {exc}") from exc
+
+    @app.post("/api/activity-resources/frame")
+    async def upload_activity_frame(
+        request: Request,
+        account: Optional[str] = None,
+        module: Optional[str] = None,
+        kind: str = "main",
+    ) -> dict[str, Any]:
+        """上传现场截图 → 按坐标框裁剪成模板并存入本地资源库
+
+        请求体是图片原始字节（不依赖 python-multipart）；
+        kind=main：主页轮播图截图（裁 enter1）；kind=menu：活动内菜单截图（裁 enter2/3）。
+        """
+        acc = resolve_account(account)
+        body = await request.body()
+        if not body:
+            raise HTTPException(status_code=400, detail="请求体为空（需要上传图片字节）")
+        if len(body) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="图片过大（>20MB）")
+        bridge = _activity_bridge(acc)
+        result = bridge.install_activity_assets(body, module=module, kind=kind)
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("reason") or "补齐失败")
+        return result
+
+    @app.delete("/api/activity-resources")
+    def delete_activity_resources(
+        account: Optional[str] = None, module: Optional[str] = None
+    ) -> dict[str, Any]:
+        """删除本地补齐的活动资源（还原为"未准备"状态）"""
+        from .. import activity_assets
+
+        acc = resolve_account(account)
+        bridge = _activity_bridge(acc)
+        report = bridge.activity_resource_report(module)
+        target = report.get("module") or ""
+        if not target:
+            raise HTTPException(status_code=400, detail="未指定活动模块")
+        removed = activity_assets.delete_patch(
+            config.data_path, report.get("identifier") or "", target
+        )
+        return {"ok": True, "removed": removed, "report": bridge.activity_resource_report(module)}
 
     @app.post("/api/scan")
     async def scan(account: Optional[str] = None) -> dict[str, Any]:

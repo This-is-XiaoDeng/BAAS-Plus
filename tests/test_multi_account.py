@@ -61,6 +61,12 @@ class FakeBridge:
     def list_activity_modules(self):
         return []
 
+    def list_patched_modules(self):
+        return []
+
+    def ensure_activity_resources(self, module_name):
+        return False, "假 bridge：无活动资源"
+
     def activity_module_available(self, module_name):
         return False
 

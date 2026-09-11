@@ -22,11 +22,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .config import AccountConfig, AppConfig, SweepConfig
+from . import activity_assets
 
 logger = logging.getLogger(__name__)
 
 # BAAS 扫荡列表项格式：region-mission-counts（counts 可为 max 或数字）
 SWEEP_ITEM_RE = re.compile(r"\d+-\d+-(?:max|\d+)")
+
+# 配置 server（cn/in/jp）→ BAAS 资源目录名。注意国际服在 BAAS 2025-03 之后被拆成
+# Global_en-us / Global_ko-kr / Global_zh-tw（见 _server_identifier 的兜底逻辑）
+SERVER_DIR_MAP = {"cn": "CN", "in": "Global", "jp": "JP"}
+# 国际服的候选目录名（按优先级）
+GLOBAL_DIR_CANDIDATES = ("Global_zh-tw", "Global_en-us", "Global_ko-kr", "Global")
+# 轮播图模板匹配阈值（与 BAAS compare_image 默认阈值一致）
+BANNER_MATCH_THRESHOLD = 0.8
 
 
 def _parse_sweep_list(value: object) -> list[str]:
@@ -193,9 +202,16 @@ class BaasBridge:
     _main 为 None 时新建）。
     """
 
-    def __init__(self, config: AppConfig | AccountConfig, main: Any | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig | AccountConfig,
+        main: Any | None = None,
+        data_dir: str | Path | None = None,
+    ) -> None:
         self.config = config
         self._main = main
+        # 活动资源库根目录（默认 <data_dir>/activity_patches；测试可注入临时目录）
+        self._data_dir = Path(data_dir) if data_dir else None
         self.baas_thread: Baas_thread | None = None
         self._started = False
 
@@ -349,7 +365,25 @@ class BaasBridge:
         logger.info("Baas_thread.init_all_data 完成")
         self.baas_thread = baas
         self.apply_game_package()
+        self._inject_configured_activity_resources()
         return baas
+
+    def _inject_configured_activity_resources(self) -> None:
+        """init_all_data 之后注入配置里手动指定的活动模块资源（内存注入）
+
+        资源在 WebUI「活动策略 → 活动资源」里准备（配置时检查/上传截图），这里只做
+        静默注入：注入失败不影响本次执行，活动分支会按"资源未就绪"跳过并记日志。
+        """
+        if not getattr(getattr(self.config, "activity", None), "inject_activity_resources", False):
+            return
+        module = getattr(self.config.baas, "current_activity", "") or ""
+        if not module or module in self.list_activity_modules():
+            return
+        if not self._patch_assets(module):
+            return
+        result = self.inject_activity_resources(module)
+        if not result.get("ok"):
+            logger.warning("活动资源注入失败（不影响其它任务）: %s", result.get("reason"))
 
     def solve(self, task: str) -> Any:
         """执行单个 BAAS 任务"""
@@ -578,47 +612,402 @@ class BaasBridge:
             logger.warning("写入 config current_game_activity 失败（可忽略）: %s", exc)
         logger.info("已设置 BAAS 活动模块: %s", module_name)
 
+    # ---- 活动资源（当前服截图模板）----
+
+    def _activity_data_dir(self) -> Path:
+        """BAAS-Plus 数据目录（活动资源库在其下的 activity_patches/）"""
+        if self._data_dir is not None:
+            return Path(self._data_dir)
+        data_dir = getattr(self.config, "data_path", None)
+        if data_dir is None:  # AccountConfig 没有 data_path（data_dir 是全局配置）
+            data_dir = Path(__file__).resolve().parent.parent / "data"
+        return Path(data_dir)
+
+    def _server_identifier(self, root: str | None = None) -> str:
+        """当前服的 BAAS 资源目录名（CN / JP / Global_zh-tw ...）
+
+        BAAS 用 `Baas_thread.identifier` 定位截图资源：它由设备里的游戏判定
+        （服务器 + 国际服的 OCR 语言，如 `Global_en-us`）。因此优先取运行中线程的
+        identifier（最准确）；没有线程时按配置映射，国际服再退化到实际存在的
+        `Global_*` 目录——BAAS 2025-03 起把 `Global` 拆成了 en-us/ko-kr/zh-tw，
+        旧映射写死 `Global` 会让国际服的活动资源目录永远不存在。
+        """
+        thread = self.baas_thread
+        identifier = getattr(thread, "identifier", None) if thread is not None else None
+        if isinstance(identifier, str) and identifier:
+            return identifier
+        identifier = SERVER_DIR_MAP.get(getattr(self.config.baas, "server", "cn"), "CN")
+        if identifier == "Global" and root:
+            try:
+                names = set(os.listdir(os.path.join(root, "src", "images")))
+            except OSError:
+                names = set()
+            for candidate in GLOBAL_DIR_CANDIDATES:
+                if candidate in names:
+                    return candidate
+        return identifier
+
     def list_activity_modules(self) -> list[str]:
         """扫描当前服可用的活动模块白名单（BAAS 按服加载截图模板资源）
 
         注意：BAAS 的 position.init_image_data 只加载当前服
-        src/images/{CN|Global|JP}/x_y_range/activity/ 下的模板，缺少模板的活动
+        src/images/{CN|JP|Global_*}/x_y_range/activity/ 下的模板，缺少模板的活动
         模块即使存在也会导致资源初始化失败（截图匹配全废）。因此这里扫的是
         **当前服的 x_y_range 资源目录**，而不是 module/activities/（全服共享）。
         """
-        import os
-
-        identifier = {"cn": "CN", "in": "Global", "jp": "JP"}.get(
-            self.config.baas.server, "CN"
-        )
+        root = self._activity_resource_root()
+        if not root:
+            return []
+        identifier = self._server_identifier(root)
+        d = os.path.join(root, "src", "images", identifier, "x_y_range", "activity")
+        if not os.path.isdir(d):
+            logger.warning("当前服活动资源目录不存在: %s", d)
+            return []
+        # 同时校验关卡数据 JSON 存在（activity_utils 扫荡时需要；命名有两种：<模块>.json / <模块>.py.json）
+        json_dir = os.path.join(root, "src", "explore_task_data", "activities")
         try:
-            import_baas(self.config.baas.repo_dir)
-            import module.activities as acts_pkg
-
-            root = os.path.dirname(os.path.dirname(os.path.dirname(acts_pkg.__file__)))  # BAAS 根目录
-            d = os.path.join(root, "src", "images", identifier, "x_y_range", "activity")
-            if not os.path.isdir(d):
-                logger.warning("当前服活动资源目录不存在: %s", d)
-                return []
-            # 同时校验关卡数据 JSON 存在（activity_utils 扫荡时需要；命名有两种：<模块>.json / <模块>.py.json）
-            json_dir = os.path.join(root, "src", "explore_task_data", "activities")
-            return sorted(
-                f[:-3]
-                for f in os.listdir(d)
-                if f.endswith(".py")
-                and not f.startswith("_")
-                and (
-                    os.path.exists(os.path.join(json_dir, f[:-3] + ".json"))
-                    or os.path.exists(os.path.join(json_dir, f[:-3] + ".py.json"))
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
+            names = os.listdir(d)
+        except OSError as exc:
             logger.warning("扫描 BAAS 活动模块失败: %s", exc)
             return []
+        return sorted(
+            f[:-3]
+            for f in names
+            if f.endswith(".py")
+            and not f.startswith("_")
+            and (
+                os.path.exists(os.path.join(json_dir, f[:-3] + ".json"))
+                or os.path.exists(os.path.join(json_dir, f[:-3] + ".py.json"))
+            )
+        )
 
     def activity_module_available(self, module_name: str) -> bool:
-        """模块是否在当前服资源白名单内（防止选了缺模板的活动导致 BAAS 崩溃）"""
-        return module_name in self.list_activity_modules()
+        """模块是否可用：当前服资源白名单 **或** 本地活动资源库已备齐
+
+        本地资源由 WebUI「活动策略 → 活动资源」准备（见 activity_assets），
+        运行时内存注入 BAAS，因此同样安全（不会让 BAAS 的资源初始化失败）。
+        """
+        if module_name in self.list_activity_modules():
+            return True
+        return bool(self._patch_assets(module_name))
+
+    def _patch_assets(self, module_name: str) -> list[str]:
+        """本地资源库中该模块已有的模板键（空列表 = 未准备）"""
+        return activity_assets.present_assets(
+            self._activity_data_dir(), self._server_identifier(self._activity_resource_root()), module_name
+        )
+
+    def read_activity_boxes(self, module: str) -> dict[str, list[int]]:
+        """活动模块的 enter1/2/3 坐标框（1280x720 基准）
+
+        优先本地资源库 meta.json（配置时从其它服 x_y_range 抄来的那份），
+        否则从 BAAS 各服的 `x_y_range/activity/<模块>.py` 里解析（纯文本解析，
+        不 import 模块）。上游对同活动也是"坐标沿用日服、像素各服自拍"。
+        """
+        identifier = self._server_identifier(self._activity_resource_root())
+        meta = activity_assets.load_meta(self._activity_data_dir(), identifier, module)
+        if meta:
+            boxes = meta.get("boxes") or {}
+            if boxes.get("enter1"):
+                return {k: [int(v) for v in box] for k, box in boxes.items() if len(box) == 4}
+        root = self._activity_resource_root()
+        if not root:
+            return {}
+        for sv in (identifier, "CN", "JP", *GLOBAL_DIR_CANDIDATES):
+            path = os.path.join(root, "src", "images", sv, "x_y_range", "activity", f"{module}.py")
+            boxes = activity_assets.boxes_from_xyrange_file(path)
+            if boxes.get("enter1"):
+                return boxes
+        return {}
+
+    def _resource_existence(self, module: str) -> dict[str, Any]:
+        """该模块的资源存在性明细（不涉及 BAAS 运行时）"""
+        root = self._activity_resource_root()
+        identifier = self._server_identifier(root)
+        info: dict[str, Any] = {
+            "identifier": identifier,
+            "baas_root": root,
+            "code_module": False,
+            "stage_json": False,
+            "server_xyrange": False,
+            "server_templates": [],
+            "whitelisted": False,
+        }
+        if not root:
+            return info
+        info["code_module"] = os.path.isfile(
+            os.path.join(root, "module", "activities", f"{module}.py")
+        )
+        json_dir = os.path.join(root, "src", "explore_task_data", "activities")
+        info["stage_json"] = os.path.isfile(os.path.join(json_dir, f"{module}.json")) or os.path.isfile(
+            os.path.join(json_dir, f"{module}.py.json")
+        )
+        info["server_xyrange"] = os.path.isfile(
+            os.path.join(root, "src", "images", identifier, "x_y_range", "activity", f"{module}.py")
+        )
+        tpl_dir = os.path.join(root, "src", "images", identifier, "activity", module)
+        if os.path.isdir(tpl_dir):
+            info["server_templates"] = sorted(
+                n[:-4] for n in os.listdir(tpl_dir) if n.endswith(".png")
+            )
+        info["whitelisted"] = module in self.list_activity_modules()
+        return info
+
+    def activity_resource_report(self, module: str | None = None) -> dict[str, Any]:
+        """活动资源自检报告（WebUI 配置时展示；只读，不改 BAAS）"""
+        module = module or getattr(self.config.baas, "current_activity", "") or ""
+        identifier = self._server_identifier(self._activity_resource_root())
+        report: dict[str, Any] = {
+            "module": module,
+            "identifier": identifier,
+            "inject_enabled": bool(
+                getattr(getattr(self.config, "activity", None), "inject_activity_resources", False)
+            ),
+            "patch_dir": (
+                str(activity_assets.module_dir(self._activity_data_dir(), identifier, module))
+                if module and activity_assets.is_safe_name(module)
+                else ""
+            ),
+            "patch_assets": [],
+            "patch_meta": None,
+            "boxes": {},
+            "boxes_source": None,
+            "issues": [],
+            "ready": False,
+            "hint": "",
+        }
+        if not module:
+            report["issues"].append(
+                {"code": "no_module", "message": "未配置活动模块（baas.current_activity 为空）"}
+            )
+            report["hint"] = "先在「模拟器 & BAAS」里填写手动指定的活动模块名。"
+            return report
+        if not activity_assets.is_safe_name(module):
+            report["issues"].append({"code": "bad_module", "message": f"模块名不合法: {module!r}"})
+            return report
+
+        info = self._resource_existence(module)
+        report.update(
+            {
+                "code_module": info["code_module"],
+                "stage_json": info["stage_json"],
+                "server_xyrange": info["server_xyrange"],
+                "server_templates": info["server_templates"],
+                "whitelisted": info["whitelisted"],
+                "baas_root": info["baas_root"],
+            }
+        )
+        report["patch_assets"] = self._patch_assets(module)
+        report["patch_meta"] = activity_assets.load_meta(
+            self._activity_data_dir(), identifier, module
+        )
+        report["boxes"] = self.read_activity_boxes(module)
+        if report["boxes"]:
+            report["boxes_source"] = "patch" if report["patch_meta"] else "other_server"
+
+        if not info["baas_root"]:
+            report["issues"].append(
+                {"code": "baas_unavailable", "message": "无法定位 BAAS 源码目录（repo_dir 未配置或 BAAS 未安装）"}
+            )
+            report["hint"] = "在「模拟器 & BAAS」里填写 BAAS 源码目录后重新检查。"
+            return report
+        if not info["code_module"]:
+            report["issues"].append(
+                {
+                    "code": "code_module_missing",
+                    "message": f"BAAS 的 module/activities/{module}.py 不存在（BAAS 版本过旧）",
+                }
+            )
+            report["hint"] = f"升级 BAAS 到包含 {module} 的版本（BAAS-Plus 无法代为实现活动逻辑）。"
+            return report
+        if not info["stage_json"]:
+            report["issues"].append(
+                {
+                    "code": "stage_json_missing",
+                    "message": f"缺少关卡数据 src/explore_task_data/activities/{module}.json",
+                }
+            )
+            report["hint"] = "升级 BAAS（关卡数据由上游随活动一起提交）。"
+            return report
+        if info["whitelisted"]:
+            report["ready"] = True
+            report["hint"] = "BAAS 已自带当前服资源，无需补齐。"
+            return report
+
+        # 当前服缺资源：能否由本地资源库补齐
+        missing = [k for k in activity_assets.ASSET_KEYS if k not in report["patch_assets"]]
+        report["missing_assets"] = missing
+        if not report["patch_assets"]:
+            report["issues"].append(
+                {
+                    "code": "server_assets_missing",
+                    "message": f"BAAS 没有 {identifier} 服的活动截图模板（x_y_range/activity/{module}.py 与 activity/{module}/*.png）",
+                }
+            )
+        elif "enter1" in missing:
+            report["issues"].append(
+                {"code": "patch_incomplete", "message": "本地资源库缺少 enter1.png（轮播图模板）"}
+            )
+        if not report["boxes"]:
+            report["issues"].append(
+                {
+                    "code": "boxes_unknown",
+                    "message": "无法确定 enter1/2/3 坐标框（各服 x_y_range 里都没有该模块）",
+                }
+            )
+            report["hint"] = "坐标框需要同活动其它服的 x_y_range；上游未提交该活动时只能等 BAAS 更新。"
+            return report
+        if "enter1" in report["patch_assets"]:
+            report["ready"] = True
+            report["hint"] = (
+                "已备好本地资源（运行时注入 BAAS 内存）"
+                + ("，enter2/3 也在" if "enter2" in report["patch_assets"] else "；未提供 enter2/3（进入活动若卡住可补上传活动内截图）")
+            )
+        else:
+            report["hint"] = (
+                "需要上传一张「主页轮播图正显示该活动」的截图，BAAS-Plus 会按坐标框裁剪 enter1 "
+                "并校验；若再上传一张「进入活动后的活动菜单」截图，可一并补齐 enter2/3。"
+            )
+        return report
+
+    def install_activity_assets(
+        self, frame_bytes: bytes, module: str | None = None, kind: str = "main"
+    ) -> dict[str, Any]:
+        """把上传的现场截图按坐标框裁剪成模板并存入本地资源库（WebUI 配置时调用）
+
+        kind="main"：主页截图 → 只裁 enter1（轮播图模板，可自校验）
+        kind="menu"：活动内菜单截图 → 裁 enter2/enter3
+        """
+        module = module or getattr(self.config.baas, "current_activity", "") or ""
+        if kind not in ("main", "menu"):
+            return {"ok": False, "reason": f"未知的截图类型: {kind}", "report": None}
+        report = self.activity_resource_report(module)
+        if not module or not activity_assets.is_safe_name(module):
+            return {"ok": False, "reason": "活动模块名为空或不合法", "report": report}
+        boxes = report.get("boxes") or {}
+        keys = ("enter1",) if kind == "main" else ("enter2", "enter3")
+        if not boxes:
+            return {
+                "ok": False,
+                "reason": "无法确定坐标框（各服 x_y_range 都没有该模块），先让 BAAS 支持或手工提供坐标",
+                "report": report,
+            }
+        try:
+            frame = activity_assets.decode_frame(frame_bytes)
+            result = activity_assets.store_frame_assets(
+                self._activity_data_dir(),
+                self._server_identifier(self._activity_resource_root()),
+                module,
+                frame,
+                boxes,
+                keys,
+                source=f"webui-upload:{kind}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "reason": str(exc), "report": report}
+        if not result["saved"]:
+            return {
+                "ok": False,
+                "reason": f"坐标框里没有 {','.join(keys)}（无法裁剪该类型的模板）",
+                "report": report,
+            }
+        logger.info(
+            "活动资源已保存: %s %s（%s）", module, result["saved"], result["dir"]
+        )
+        updated = self.activity_resource_report(module)
+        updated["stored"] = result
+        return {"ok": True, "stored": result, "report": updated}
+
+    def inject_activity_resources(self, module: str) -> dict[str, Any]:
+        """把本地资源库里的模板注入 BAAS 的 image_dic / image_x_y_range
+
+        与 BAAS `position.init_image_data` 加载活动资源的效果等价（同样的两个
+        dict、同样的键名），因此 BAAS 的 `image.compare_image('activity_enter1')`、
+        `get_area` 等都能正常取到；不写任何文件到 BAAS 源码目录。
+
+        必须在 `init_all_data()` 之后调用（$初始化只在 identifier 首次执行，
+        之后重复调用会提前 return，注入结果不会被覆盖）。
+        """
+        identifier = self._server_identifier(self._activity_resource_root())
+        assets = self._patch_assets(module)
+        if "enter1" not in assets:
+            return {"ok": False, "reason": "本地资源库没有 enter1.png", "injected": []}
+        try:
+            import_baas(self.config.baas.repo_dir)
+            from core import position
+            import cv2
+            import numpy as np
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "reason": f"导入 BAAS 图像模块失败: {exc}", "injected": []}
+        boxes = (activity_assets.load_meta(
+            self._activity_data_dir(), identifier, module
+        ) or {}).get("boxes") or self.read_activity_boxes(module)
+        injected: list[str] = []
+        position.image_dic.setdefault(identifier, {})
+        by_prefix = position.image_x_y_range.setdefault(identifier, {})
+        by_prefix.setdefault("activity", {})
+        for key in assets:
+            raw = activity_assets.read_asset(self._activity_data_dir(), identifier, module, key)
+            if not raw:
+                continue
+            img = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                continue
+            position.image_dic[identifier][f"activity_{key}"] = img
+            box = boxes.get(key)
+            if box:
+                by_prefix["activity"][key] = tuple(int(v) for v in box)
+            injected.append(key)
+        logger.info(
+            "已注入活动资源（内存）: %s/%s → %s", identifier, module, injected
+        )
+        return {"ok": bool(injected), "injected": injected, "identifier": identifier}
+
+    def ensure_activity_resources(self, module: str) -> tuple[bool, str]:
+        """确认模块可用；必要时按配置注入本地资源
+
+        返回 (可用, 说明)。说明用于日志/告警分级：区分「BAAS 版本过旧」
+        「当前服无资源且未开启注入」「已开启注入但资源未准备」等情形。
+        """
+        report = self.activity_resource_report(module)
+        if report.get("whitelisted"):
+            return True, f"BAAS 自带 {report['identifier']} 服资源"
+        inject_enabled = bool(report.get("inject_enabled"))
+        if report.get("ready") and inject_enabled:
+            result = self.inject_activity_resources(module)
+            if result.get("ok"):
+                return True, f"已注入本地活动资源（{','.join(result['injected'])}）"
+            return False, f"活动资源注入失败：{result.get('reason')}"
+        messages = {
+            "code_module_missing": "BAAS 的 module/activities 里没有该模块（BAAS 版本过旧）",
+            "stage_json_missing": "缺少活动关卡数据 json（BAAS 版本过旧）",
+            "server_assets_missing": f"BAAS 没有 {report.get('identifier')} 服的活动截图模板",
+            "boxes_unknown": "无法确定坐标框（上游未提交该活动）",
+            "baas_unavailable": "无法定位 BAAS 源码目录",
+        }
+        detail = next(
+            (messages[i["code"]] for i in report.get("issues", []) if i["code"] in messages),
+            None,
+        )
+        detail = detail or report.get("hint") or "资源未就绪"
+        if not inject_enabled:
+            detail += "；可在 WebUI「活动策略 → 活动资源」开启并补齐"
+        else:
+            detail += "；请在 WebUI「活动策略 → 活动资源」中检查并上传截图补齐"
+        return False, detail
+
+    def list_patched_modules(self) -> list[str]:
+        """本地资源库里已备齐 enter1 的模块（当前服口径）
+
+        用于活动模块的自动匹配候选（BAAS 白名单之外的补齐模块）。
+        """
+        identifier = self._server_identifier(self._activity_resource_root())
+        root = activity_assets.patch_root(self._activity_data_dir()) / identifier
+        try:
+            names = sorted(d.name for d in root.iterdir() if d.is_dir())
+        except OSError:
+            return []
+        return [n for n in names if activity_assets.is_safe_name(n) and self._patch_assets(n)]
 
     def _activity_resource_root(self) -> str | None:
         """BAAS 根目录（从 module.activities 包推导），失败返回 None"""
@@ -628,31 +1017,58 @@ class BaasBridge:
 
             return os.path.dirname(os.path.dirname(os.path.dirname(acts_pkg.__file__)))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("推导 BAAS 根目录失败: %s", exc)
+            if not self.config.baas.repo_dir:
+                # 未配置 repo_dir 且环境里没有 BAAS：独立运行 WebUI 的正常状态，不必刷警告
+                logger.debug("推导 BAAS 根目录失败（未配置 repo_dir，按独立运行处理）: %s", exc)
+            else:
+                logger.warning("推导 BAAS 根目录失败: %s", exc)
             return None
 
     def _activity_template_path(self, module: str, filename: str) -> str | None:
-        """BAAS 活动模块模板图路径：<root>/src/images/<identifier>/activity/<module>/<filename>"""
+        """活动模块模板图路径
+
+        优先本地资源库（data/activity_patches/...，当前服缺资源时由 BAAS-Plus
+        补齐），否则用 BAAS 自带的 <root>/src/images/<identifier>/activity/<模块>/。
+        """
+        try:
+            local = activity_assets.asset_path(
+                self._activity_data_dir(),
+                self._server_identifier(self._activity_resource_root()),
+                module,
+                filename[:-4] if filename.endswith(".png") else filename,
+            )
+            if local.is_file():
+                return str(local)
+        except ValueError:
+            pass
         root = self._activity_resource_root()
         if not root:
             return None
-        identifier = {"cn": "CN", "in": "Global", "jp": "JP"}.get(
-            self.config.baas.server, "CN"
-        )
+        identifier = self._server_identifier(root)
         path = os.path.join(
             root, "src", "images", identifier, "activity", module, filename
         )
         return path if os.path.isfile(path) else None
 
     def match_banner_activity(
-        self, candidates: list[str], threshold: float = 0.8
+        self, candidates: list[str], threshold: float = BANNER_MATCH_THRESHOLD
     ) -> str | None:
         """模板匹配轮播图当前页活动
 
-        用 BAAS 活动模块自带的 enter1.png（主页轮播图「进入活动」按钮模板，
-        各活动样式不同）在轮播图区域搜索，绕开 OCR 对艺术字标题识别率低的问题。
+        用活动模块的 enter1.png（轮播图当前页的"皮肤指纹"，各活动/各版本不同）
+        判断轮播图当前显示的是哪个活动，绕开 OCR 对艺术字标题识别率低的问题。
 
-        返回最高分且达阈值的模块名；无候选/无模板/无截图返回 None。
+        判定用**两个口径**，与 BAAS 内部保持一致（修复两类误判）：
+        1. BAAS 口径（主判据）：按模块声明的 enter1 坐标框裁一块做 1:1 比对
+           （rgb 均值预筛 + 单点 matchTemplate，同 `core.image.compare_image`）。
+           BAAS 实际进入活动时用的就是这个口径，滑窗高分但框内不及格的模板
+           （典型：跨版本皮肤）不该被 BAAS-Plus 判为"已就绪"。
+        2. 滑窗口径（宽容路径，兼容历史上按框写偏的模板）：模板面积 ≥
+           MIN_TRUSTED_TEMPLATE_AREA 时阈值取 threshold；小模板（20x10/22x20）
+           的 TM_CCOEFF_NORMED 会虚高（实测无关画面也能到 0.80~0.91），
+           必须 ≥ SMALL_TEMPLATE_MIN_SCORE 才接受。
+
+        返回命中的模块名；无候选/无模板/无截图返回 None。
         """
         if not candidates or self.baas_thread is None:
             logger.warning(
@@ -681,7 +1097,7 @@ class BaasBridge:
             return None
         import cv2
 
-        best_mod, best_val = None, 0.0
+        best: tuple[str, float, str] | None = None  # (模块, 分数, 判定路径)
         for mod in candidates:
             tpl_path = self._activity_template_path(mod, "enter1.png")
             if not tpl_path:
@@ -691,24 +1107,38 @@ class BaasBridge:
             if tpl is None:
                 logger.warning("读取模板失败: %s", tpl_path)
                 continue
-            if tpl.shape[0] > banner.shape[0] or tpl.shape[1] > banner.shape[1]:
-                logger.warning("活动模块 %s 模板大于轮播图区域，跳过", mod)
-                continue
-            res = cv2.matchTemplate(banner, tpl, cv2.TM_CCOEFF_NORMED)
-            _, mx, _, _ = cv2.minMaxLoc(res)
-            logger.info("轮播图模板匹配 %s: %.3f", mod, mx)
-            if mx > best_val:
-                best_val, best_mod = mx, mod
-        if best_mod and best_val >= threshold:
-            logger.info("轮播图模板匹配到目标活动: %s (%.3f)", best_mod, best_val)
-            return best_mod
-        if best_mod:
+            fits = tpl.shape[0] <= banner.shape[0] and tpl.shape[1] <= banner.shape[1]
+            slide = activity_assets.score_slide(banner, tpl) if fits else None
+            box = self.read_activity_boxes(mod).get("enter1")
+            box_score = None
+            if box:
+                try:
+                    box_score = activity_assets.score_in_box(img, box, tpl, ratio)["score"]
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("活动模块 %s 框内比对失败: %s", mod, exc)
+            area = activity_assets.template_area(tpl)
             logger.info(
-                "轮播图模板匹配未达阈值: 最高 %s %.3f < %.2f",
-                best_mod,
-                best_val,
-                threshold,
+                "轮播图模板匹配 %s: 滑窗=%s 框内=%s 模板面积=%d",
+                mod,
+                "n/a" if slide is None else f"{slide:.3f}",
+                "n/a" if box_score is None else f"{box_score:.3f}",
+                area,
             )
+            accepted: tuple[float, str] | None = None
+            if box_score is not None and box_score >= threshold:
+                accepted = (box_score, "框内")
+            elif slide is not None and slide >= threshold and area >= activity_assets.MIN_TRUSTED_TEMPLATE_AREA:
+                accepted = (slide, "滑窗")
+            elif slide is not None and slide >= activity_assets.SMALL_TEMPLATE_MIN_SCORE:
+                accepted = (slide, "滑窗(小模板严格)")
+            if accepted and (best is None or accepted[0] > best[1]):
+                best = (mod, accepted[0], accepted[1])
+        if best:
+            logger.info(
+                "轮播图模板匹配到目标活动: %s（%s口径 %.3f）", best[0], best[2], best[1]
+            )
+            return best[0]
+        logger.info("轮播图模板匹配未命中（阈值 %.2f）", threshold)
         return None
 
     def ocr_banner(self) -> str:

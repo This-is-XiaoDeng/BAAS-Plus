@@ -82,12 +82,24 @@ class FakeBridge:
     def list_activity_modules(self):
         return getattr(self, "activity_modules", [])
 
-    def activity_module_available(self, module_name):
-        # 未设置白名单时默认放行（测试兼容）；设置后按白名单校验
+    def list_patched_modules(self):
+        return getattr(self, "patched_modules", [])
+
+    def ensure_activity_resources(self, module_name):
+        """引擎统一入口：返回 (可用, 说明)，语义与真实 bridge 一致
+
+        未设置白名单时默认放行（测试兼容）；设置后按白名单校验，本地补齐模块
+        （patched_modules）视为已注入可用 —— 对应「活动资源内存注入」功能。
+        """
         mods = getattr(self, "activity_modules", None)
-        if mods is None:
-            return True
-        return module_name in mods
+        if mods is None or module_name in mods:
+            return True, "假 bridge 直接可用"
+        if module_name in getattr(self, "patched_modules", []):
+            return True, "已注入本地活动资源（假 bridge）"
+        return False, "当前服 <CN> 无截图模板（假 bridge）"
+
+    def activity_module_available(self, module_name):
+        return self.ensure_activity_resources(module_name)[0]
 
     def ocr_banner(self):
         # 支持列表模拟轮播图换页（每次 OCR 取下一页文本）

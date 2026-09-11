@@ -71,6 +71,7 @@
   .btn.primary { background: var(--accent); color: #fff; }
   .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
   .btn.danger { background: transparent; border: 1px solid var(--err); color: var(--err); }
+  .sep { border: none; border-top: 1px solid var(--border); margin: 14px 0 6px; }
 
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
@@ -210,6 +211,21 @@
         <label><input type="checkbox" id="act_push_mission"> 新活动自动推图（任务）</label>
         <label><input type="checkbox" id="act_push_challenge"> 新活动自动推图（挑战）</label>
       </div>
+      <p class="hint">剧情话数以活动模块的关卡数据（explore_task_data json）为准；若游戏内话数比它少，推图会找不到任务，此时建议只推任务/挑战。</p>
+      <hr class="sep">
+      <div class="chk">
+        <label><input type="checkbox" id="act_inject_resources"> 补齐当前服活动截图资源（内存注入，不修改 BAAS 源码）</label>
+      </div>
+      <p class="hint">BAAS 尚未收录当前服活动模板时（日志提示「没有 CN 服的活动截图模板」/「当前服活动资源目录不存在」，或 BAAS 报「Module ... not found」），开启后由 BAAS-Plus 提供模板：上传一张<b>主页轮播图正显示该活动</b>的截图，按坐标框裁出 enter1（轮播图指纹）；进入活动后再截一张活动菜单图可补 enter2/3。模板存放在 <code>data/activity_patches/</code>，运行时注入 BAAS 内存，不改 BAAS 源码。上传前请确认轮播图当前页就是要推/扫的活动。</p>
+      <div class="row">
+        <div><button class="btn ghost" onclick="checkActivityResources()">🔍 检查活动资源</button></div>
+        <div><button class="btn ghost" onclick="$('act_frame_main').click()">📷 上传主页截图</button>
+          <input type="file" id="act_frame_main" accept="image/*" hidden onchange="uploadActivityFrame('main')"></div>
+        <div><button class="btn ghost" onclick="$('act_frame_menu').click()">📷 上传活动内截图</button>
+          <input type="file" id="act_frame_menu" accept="image/*" hidden onchange="uploadActivityFrame('menu')"></div>
+        <div><button class="btn ghost" onclick="resetActivityResources()">↩ 删除本地资源</button></div>
+      </div>
+      <pre id="act_res_report" hidden></pre>
     </div>
 
     <div class="card">
@@ -414,6 +430,7 @@ function loadForm() {
   $('act_push_story').checked = a.activity.push_story_on_new;
   $('act_push_mission').checked = a.activity.push_mission_on_new;
   $('act_push_challenge').checked = a.activity.push_challenge_on_new;
+  $('act_inject_resources').checked = !!a.activity.inject_activity_resources;
   $('sweep_strategy').value = a.sweep.strategy;
   $('sweep_fixed_times').value = a.sweep.fixed_times;
   $('sweep_max_times').value = a.sweep.max_times;
@@ -500,6 +517,9 @@ function collectConfig() {
       push_story_on_new: $('act_push_story').checked,
       push_mission_on_new: $('act_push_mission').checked,
       push_challenge_on_new: $('act_push_challenge').checked,
+      // 前端没有对应控件的老字段：原样带回去（否则保存会把用户改过的值重置成默认）
+      push_before_sweep: acc().activity.push_before_sweep !== false,
+      inject_activity_resources: $('act_inject_resources').checked,
     },
     sweep: {
       strategy: $('sweep_strategy').value,
@@ -549,7 +569,66 @@ async function saveConfig() {
     }
     toast(msg);
     await loadConfig();  // 账号名/启停可能变化，重载标签栏
+    // 活动资源检查结果（配置时给出，避免运行时才报错）
+    const mine = (r.resource_reports || []).find(x => x.account === acc().id);
+    if (mine) {
+      if (mine.error) renderResourceReport({ hint: '活动资源检查失败: ' + mine.error, issues: [] }, false);
+      else renderResourceReport(mine.report, true);
+    }
   } catch (e) { toast('保存失败: ' + e.message, false); }
+}
+
+// ---- 活动资源（当前服截图模板缺失时的检查/补齐） ----
+
+function renderResourceReport(rep, ok) {
+  const el = $('act_res_report');
+  const lines = [];
+  lines.push(`活动模块: ${rep.module || '(未设置)'}    当前服资源标识: ${rep.identifier || '-'}`);
+  if (rep.ready) lines.push('状态: ✅ 可用' + (rep.whitelisted ? '（BAAS 自带资源）' : '（本地资源已备齐）'));
+  else lines.push('状态: ⚠ 未就绪');
+  if (rep.whitelisted !== undefined) {
+    lines.push(`BAAS 自带: 模块代码 ${rep.code_module ? '✓' : '✗'}  关卡数据 ${rep.stage_json ? '✓' : '✗'}  当前服 x_y_range ${rep.server_xyrange ? '✓' : '✗'}  模板 ${(rep.server_templates || []).join(',') || '无'}`);
+  }
+  lines.push(`本地资源: ${(rep.patch_assets || []).join(',') || '无'}${rep.patch_dir ? '  目录: ' + rep.patch_dir : ''}`);
+  if ((rep.issues || []).length) lines.push('问题:\n  - ' + rep.issues.map(i => i.message).join('\n  - '));
+  if (rep.hint) lines.push('建议: ' + rep.hint);
+  el.textContent = lines.join('\n');
+  el.hidden = false;
+  toast(rep.ready ? '活动资源可用' : '活动资源未就绪（见「活动策略」下方提示）', !!rep.ready);
+}
+
+async function checkActivityResources() {
+  try {
+    const r = await api('/api/activity-resources?account=' + encodeURIComponent(acc().id));
+    renderResourceReport(r.report, true);
+  } catch (e) { toast('检查失败: ' + e.message, false); }
+}
+
+async function uploadActivityFrame(kind) {
+  const input = $(kind === 'main' ? 'act_frame_main' : 'act_frame_menu');
+  const file = input.files && input.files[0];
+  if (!file) return;
+  try {
+    const q = '/api/activity-resources/frame?account=' + encodeURIComponent(acc().id)
+      + '&module=' + encodeURIComponent(($('baas_current_activity').value || '').trim())
+      + '&kind=' + kind;
+    const r = await api(q, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
+    renderResourceReport(r.report, true);
+    const v = (r.stored || {}).verification || {};
+    if (v.enter1) toast(`enter1 已保存（自校验 ${v.enter1.score}，${v.enter1.frame}）`);
+    else toast('已保存: ' + ((r.stored || {}).saved || []).join(','));
+  } catch (e) { toast('补齐失败: ' + e.message, false); }
+  finally { input.value = ''; }
+}
+
+async function resetActivityResources() {
+  if (!confirm('删除本地补齐的活动截图资源？（BAAS 自带资源不受影响）')) return;
+  try {
+    const q = '/api/activity-resources?account=' + encodeURIComponent(acc().id)
+      + '&module=' + encodeURIComponent(($('baas_current_activity').value || '').trim());
+    const r = await api(q, { method: 'DELETE' });
+    renderResourceReport(r.report, true);
+  } catch (e) { toast('删除失败: ' + e.message, false); }
 }
 
 // ---- 账号操作 ----

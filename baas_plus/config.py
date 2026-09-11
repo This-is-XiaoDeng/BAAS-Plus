@@ -133,6 +133,11 @@ class ActivityConfig(BaseModel):
     # BAAS 定位任务依赖按钮模板匹配，未解锁（未推）任务的按钮样式不匹配，
     # 直接扫荡会定位失败；已全 SSS 时推图会快速跳过，开销很小
     push_before_sweep: bool = True
+    # BAAS 尚未收录当前服活动截图资源时，用 BAAS-Plus 自己准备的模板在运行时
+    # 注入 BAAS 的 image_dic / image_x_y_range（内存注入，不修改 BAAS 源码）。
+    # 资源在 WebUI「活动策略 → 活动资源」里检查/补齐（上传现场截图裁剪，见
+    # baas_plus/activity_assets.py）；默认关闭 = 缺资源时直接跳过活动推图/扫荡。
+    inject_activity_resources: bool = False
 
 
 class SweepConfig(BaseModel):

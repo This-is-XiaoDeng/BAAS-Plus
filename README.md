@@ -130,6 +130,7 @@ baas_plus/
 ├── engine.py        # 核心编排：模拟器 → 活动 → 任务 → 扫荡 → 通知（单账号级）
 ├── multi_account.py # 多账号批量编排：串行执行、失败隔离、共享 OCR Main
 ├── activity.py      # GameKee 活动数据源
+├── activity_assets.py # 活动截图资源库（当前服缺模板时的裁剪/校验/落盘）
 ├── baas_bridge.py   # BAAS 集成层（惰性导入，仅 Windows 运行时装 BAAS）
 ├── store.py         # SQLite 状态存储（活动去重 + 执行记录，按账号隔离）
 ├── notifier.py      # 邮件通知
@@ -139,8 +140,26 @@ baas_plus/
 ## ⚠️ 已知限制
 
 - 活动推图依赖 BAAS 社区维护的活动模块（`module/activities/`，每个活动一个插件）。模块自动对应按优先级：手动配置 `baas.current_activity` > BAAS 记录的 `current_game_activity` > 活动标题关键词匹配；当 GameKee 标题为纯中文、未收录于内置别名表且 BAAS 无任何记录时无法自动对应，需手动在配置中指定 `baas.current_activity`
+- 活动模块还要求 **BAAS 已收录当前服的截图资源**（`src/images/<CN|JP|Global_*>/x_y_range/activity/<模块>.py` 与 `activity/<模块>/enter*.png`）。上游常常只收录部分服（例：国服 2026-09 的「百芳丛中独一枝」当时只有日服资源），此时 BAAS 的资源初始化会失败，BAAS-Plus 会跳过活动推图/扫荡并说明原因；可用「活动截图资源补齐」在这个空窗期自行提供模板（见下一节）
 - 实际运行需 Windows + 模拟器 + 完整 BAAS 环境；调度器本身可在任意平台开发测试（不 import core 的部分）
 - BAAS 上游 release 包与源码偶尔字段不同步（如 v1.4.3 的 `steam_app_process_name` vs 源码 `PC_app_process_name`），BAAS-Plus 首次调用时会自动对齐 `config/static.json` 与 `config/<server>/config.json` 字段（幂等，保留用户已有配置）
+
+## 🧩 活动截图资源补齐（当前服缺模板时）
+
+WebUI「配置 → 🎪 活动策略」里的 **「补齐当前服活动截图资源」** 开关（默认关闭，账号级）：
+
+1. **配置时先检查**：开关打开或填写了手动活动模块后，保存配置时会立即返回资源自检报告（缺模块代码 / 缺关卡数据 / 缺当前服模板 / 缺坐标框，以及该怎么补），也可点「🔍 检查活动资源」随时查看。问题在配置阶段暴露，不需要等运行时报错。
+2. **上传现场截图补齐**：上传一张**主页轮播图正显示该活动**的截图 → 按坐标框裁出 `enter1.png` 并自校验；进入活动后再截一张活动菜单图 → 补 `enter2/3`。模板保存在 `data/activity_patches/<服>/<模块>/`（不写任何文件到 BAAS 源码目录）。
+3. **运行时内存注入**：`create_baas` 之后把模板注入 BAAS 的 `core.position.image_dic` / `image_x_y_range`（与 BAAS `init_image_data` 加载活动资源等价），不改 BAAS 源码、不动 `git` 工作区；关闭开关即完全不注入。
+
+要点：
+
+- `enter1` 在 BAAS 里是**轮播图当前页的皮肤指纹**（按 `x_y_range` 框裁一块做 1:1 比对，先 rgb 均值预筛再单点匹配，阈值 0.8），所以**必须用当前服、当前版本的画面**裁剪。跨服/跨版本借模板不可靠：实测国服 2026-09 水仗活动借日服 2026 复刻版模板，BAAS 口径 1:1 仅 **0.534**（不及格），借日服同版本皮肤则 **0.959**。
+- 坐标框（`enter1/2/3`）可以沿用同活动其它服 `x_y_range` 里的值（上游国际服也是这么做的：三语各拍 PNG、xyrange 沿用日服），BAAS-Plus 在补齐时自动从各服目录里找。
+- 上传前请确认轮播图当前页就是目标活动：模板是"指纹"，截错页会导致后续把别的轮播页误认成目标活动。
+- 上游补了该服资源后，白名单命中即优先用 BAAS 自带资源，本地补齐自动失效（可点「↩ 删除本地资源」清理）。
+- 顺带修复的两个判定问题：轮播图匹配现在同时用「框内 1:1（BAAS 口径）」与「滑窗」两个口径，小模板（面积 < 1500，如 20×10/22×20）必须达到 0.95 才接受——这类小模板的 `TM_CCOEFF_NORMED` 会虚高，实测在完全无关的轮播图上也能刷到 0.80~0.91，旧逻辑会误判；国际服的资源目录也不再写死 `Global`（BAAS 2025-03 起拆成 `Global_en-us/ko-kr/zh-tw`，按运行中的 `Baas_thread.identifier` 定位）。
+
 
 ## ⚠️ 免责声明
 
