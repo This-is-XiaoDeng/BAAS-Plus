@@ -131,6 +131,7 @@
   <nav class="tabs">
     <button class="tab active" data-tab="home" onclick="switchTab('home')">🏠 总览</button>
     <button class="tab" data-tab="config" onclick="switchTab('config')">⚙️ 配置</button>
+    <button class="tab" data-tab="activity" onclick="switchTab('activity')">🎪 活动</button>
     <button class="tab" data-tab="mail" onclick="switchTab('mail')">✉ 邮件通知</button>
     <button class="tab" data-tab="records" onclick="switchTab('records')">📋 执行记录</button>
   </nav>
@@ -175,15 +176,13 @@
       <div class="chk"><label><input type="checkbox" id="sim_auto_restart" checked> 读取体力失败时自动重启模拟器恢复（游戏失联自愈）</label></div>
       <label>BAAS 源码目录（repo_dir，留空用已安装包）</label><input id="baas_repo_dir" placeholder="C:\BAAS">
       <label>BAAS 配置目录名（config/ 下子目录）</label><select id="baas_config_dir"></select>
-      <label>服务器</label>
+      <label>服务器（同时决定活动数据源抓取哪个服的活动）</label>
       <select id="baas_server">
         <option value="cn">国服 cn</option>
         <option value="in">国际服 in</option>
         <option value="jp">日服 jp</option>
       </select>
       <label>BA 游戏包名</label><input id="baas_game_package" value="com.RoamingStar.BlueArchive" placeholder="com.RoamingStar.BlueArchive">
-      <label>手动指定活动模块（可选，自动映射未实现时使用）</label><input id="baas_current_activity" placeholder="如 SayBing">
-      <label>活动轮播图区域 x1,y1,x2,y2（1280x720，用于 OCR 识别当前横幅）</label><input id="baas_banner_region" placeholder="1109,133,1280,281">
       <div class="card-actions">
         <button class="btn ghost" onclick="testSimulator()">🖥 测试模拟器</button>
         <button class="btn ghost" onclick="testBaas()">🧪 测试 BAAS</button>
@@ -202,30 +201,6 @@
       <h2>✅ 勾选任务（顺序执行）</h2>
       <div class="chk" id="task_list"></div>
       <p class="hint">扫荡类任务（普通/困难/活动扫荡）不在此列表，由「扫荡策略」统一按剩余体力调度。开启「没有活动时用剩余体力扫荡特别委托」后，「特别委托」也改由扫荡阶段调度。</p>
-    </div>
-
-    <div class="card">
-      <h2>🎪 活动策略</h2>
-      <div class="chk">
-        <label><input type="checkbox" id="act_push_story"> 新活动自动推图（剧情）</label>
-        <label><input type="checkbox" id="act_push_mission"> 新活动自动推图（任务）</label>
-        <label><input type="checkbox" id="act_push_challenge"> 新活动自动推图（挑战）</label>
-      </div>
-      <p class="hint">剧情话数以活动模块的关卡数据（explore_task_data json）为准；若游戏内话数比它少，推图会找不到任务，此时建议只推任务/挑战。</p>
-      <hr class="sep">
-      <div class="chk">
-        <label><input type="checkbox" id="act_inject_resources"> 补齐当前服活动截图资源（内存注入，不修改 BAAS 源码）</label>
-      </div>
-      <p class="hint">BAAS 尚未收录当前服活动模板时（日志提示「没有 CN 服的活动截图模板」/「当前服活动资源目录不存在」，或 BAAS 报「Module ... not found」），开启后由 BAAS-Plus 提供模板：上传一张<b>主页轮播图正显示该活动</b>的截图，按坐标框裁出 enter1（轮播图指纹）；进入活动后再截一张活动菜单图可补 enter2/3。模板存放在 <code>data/activity_patches/</code>，运行时注入 BAAS 内存，不改 BAAS 源码。上传前请确认轮播图当前页就是要推/扫的活动。</p>
-      <div class="row">
-        <div><button class="btn ghost" onclick="checkActivityResources()">🔍 检查活动资源</button></div>
-        <div><button class="btn ghost" onclick="$('act_frame_main').click()">📷 上传主页截图</button>
-          <input type="file" id="act_frame_main" accept="image/*" hidden onchange="uploadActivityFrame('main')"></div>
-        <div><button class="btn ghost" onclick="$('act_frame_menu').click()">📷 上传活动内截图</button>
-          <input type="file" id="act_frame_menu" accept="image/*" hidden onchange="uploadActivityFrame('menu')"></div>
-        <div><button class="btn ghost" onclick="resetActivityResources()">↩ 删除本地资源</button></div>
-      </div>
-      <pre id="act_res_report" hidden></pre>
     </div>
 
     <div class="card">
@@ -267,6 +242,38 @@
         </ol>
         <p class="hint">说明：<code>run</code> 默认执行<strong>全部启用账号</strong>（每个账号独立模拟器实例，串行执行）。<br>只跑单个账号：<code>-m baas_plus.cli run --account &lt;账号名&gt;</code>。<strong>多次执行</strong>：在顶部主操作条设置「轮数」（全部账号执行完一轮后立即开始下一轮，无间隔），或命令行加 <code>--times N</code> 覆盖。<br>若配置不在默认位置，加 <code>--config D:\BAAS-Plus\data\config.json</code>。</p>
       </details>
+    </div>
+  </section>
+
+  <!-- ===== 活动（全局设置，不随账号变化） ===== -->
+  <section id="page-activity" class="page" hidden>
+    <div class="card">
+      <h2>🎪 活动策略（全局设置，所有账号共用）</h2>
+      <p class="hint" style="margin-top:0;">以下为全局活动设置，不隶属于任何账号；活动数据源抓取哪个服，跟随各账号在「配置」页选择的「服务器」。</p>
+      <label>手动指定活动模块（可选，自动映射未实现时使用；留空由引擎自动推断）</label>
+      <input id="baas_current_activity" placeholder="如 SayBing">
+      <label>活动轮播图区域 x1,y1,x2,y2（1280x720，用于 OCR 识别当前横幅）</label>
+      <input id="baas_banner_region" placeholder="1109,133,1280,281">
+      <div class="chk">
+        <label><input type="checkbox" id="act_push_story"> 新活动自动推图（剧情）</label>
+        <label><input type="checkbox" id="act_push_mission"> 新活动自动推图（任务）</label>
+        <label><input type="checkbox" id="act_push_challenge"> 新活动自动推图（挑战）</label>
+      </div>
+      <p class="hint">剧情话数以活动模块的关卡数据（explore_task_data json）为准；若游戏内话数比它少，推图会找不到任务，此时建议只推任务/挑战。</p>
+      <hr class="sep">
+      <div class="chk">
+        <label><input type="checkbox" id="act_inject_resources"> 补齐当前服活动截图资源（内存注入，不修改 BAAS 源码）</label>
+      </div>
+      <p class="hint">BAAS 尚未收录当前服活动模板时（日志提示「没有 CN 服的活动截图模板」/「当前服活动资源目录不存在」，或 BAAS 报「Module ... not found」），开启后由 BAAS-Plus 提供模板：上传一张<b>主页轮播图正显示该活动</b>的截图，按坐标框裁出 enter1（轮播图指纹）；进入活动后再截一张活动菜单图可补 enter2/3。模板存放在 <code>data/activity_patches/&lt;服&gt;/&lt;模块&gt;/</code>（按服务器区分），运行时注入 BAAS 内存，不改 BAAS 源码。上传前请确认轮播图当前页就是要推/扫的活动。下方检查/上传使用当前所选账号的 BAAS 环境（资源随其服务器存放）。</p>
+      <div class="row">
+        <div><button class="btn ghost" onclick="checkActivityResources()">🔍 检查活动资源</button></div>
+        <div><button class="btn ghost" onclick="$('act_frame_main').click()">📷 上传主页截图</button>
+          <input type="file" id="act_frame_main" accept="image/*" hidden onchange="uploadActivityFrame('main')"></div>
+        <div><button class="btn ghost" onclick="$('act_frame_menu').click()">📷 上传活动内截图</button>
+          <input type="file" id="act_frame_menu" accept="image/*" hidden onchange="uploadActivityFrame('menu')"></div>
+        <div><button class="btn ghost" onclick="resetActivityResources()">↩ 删除本地资源</button></div>
+      </div>
+      <pre id="act_res_report" hidden></pre>
     </div>
   </section>
 
@@ -321,7 +328,7 @@ let cfg = null;
 let selIdx = 0;        // 当前账号索引
 let curTab = 'home';   // 当前页签
 
-const TABS = ['home', 'config', 'mail', 'records'];
+const TABS = ['home', 'config', 'activity', 'mail', 'records'];
 
 function acc() { return cfg.accounts[selIdx]; }
 function accName(id) {
@@ -350,7 +357,7 @@ function typeLabel(t) {
   return { event: '🎉 活动', assault: '⚔️ 总力战/大决战', card: '🎴 卡池', other: 'ℹ️ 其他' }[t] || t;
 }
 
-// ---- 页签切换（hash 路由：#home / #config / #mail / #records） ----
+// ---- 页签切换（hash 路由：#home / #config / #activity / #mail / #records） ----
 
 function switchTab(name) {
   curTab = name;
@@ -425,12 +432,6 @@ function loadForm() {
   loadConfigDirs(a.baas.config_dir);
   $('baas_server').value = a.baas.server;
   $('baas_game_package').value = a.baas.game_package_name || 'com.RoamingStar.BlueArchive';
-  $('baas_current_activity').value = a.baas.current_activity;
-  $('baas_banner_region').value = (a.baas.banner_region || [1109,133,1280,281]).join(',');
-  $('act_push_story').checked = a.activity.push_story_on_new;
-  $('act_push_mission').checked = a.activity.push_mission_on_new;
-  $('act_push_challenge').checked = a.activity.push_challenge_on_new;
-  $('act_inject_resources').checked = !!a.activity.inject_activity_resources;
   $('sweep_strategy').value = a.sweep.strategy;
   $('sweep_fixed_times').value = a.sweep.fixed_times;
   $('sweep_max_times').value = a.sweep.max_times;
@@ -442,6 +443,14 @@ function loadForm() {
   $('sweep_special_task').checked = !!a.sweep.special_task_when_no_activity;
   $('sweep_special_task_times').value = a.sweep.special_task_times || '0,max';
   $('acc_notify_to_addrs').value = (a.notify_to_addrs || []).join(',');
+  // 全局活动设置（「活动」页，不随账号变化；兼容旧配置里 activity 缺失时的默认值）
+  const g = cfg.activity || {};
+  $('baas_current_activity').value = g.current_activity || '';
+  $('baas_banner_region').value = (g.banner_region || [1109,133,1280,281]).join(',');
+  $('act_push_story').checked = g.push_story_on_new !== false;   // 兼容旧配置（默认开启）
+  $('act_push_mission').checked = !!g.push_mission_on_new;
+  $('act_push_challenge').checked = !!g.push_challenge_on_new;
+  $('act_inject_resources').checked = !!g.inject_activity_resources;
   // 全局项（不在账号内）
   $('run_times').value = cfg.run_times || 1;
   $('notify_enabled').checked = cfg.notify.enabled;
@@ -496,9 +505,10 @@ async function renderTasks() {
 function collectConfig() {
   const checked = [...$('task_list').querySelectorAll('input:checked')].map(i => i.value);
   const notifyAddrs = $('acc_notify_to_addrs').value.split(',').map(s => s.trim()).filter(Boolean);
-  // 更新当前账号配置（保留 id 与未编辑字段）
+  // 更新当前账号配置（保留 id 与未编辑字段；activity 已全局化，从账号里剔除）
+  const { activity: _dropped, ...accRest } = acc();
   cfg.accounts[selIdx] = {
-    ...acc(),
+    ...accRest,
     name: $('acc_name').value.trim() || acc().name,
     enabled: $('acc_enabled').checked,
     simulator: { type: $('sim_type').value, instance: parseInt($('sim_instance').value) || 0, auto_restart_on_failure: $('sim_auto_restart').checked },
@@ -507,19 +517,7 @@ function collectConfig() {
       config_dir: $('baas_config_dir').value.trim() || 'default',
       server: $('baas_server').value,
       game_package_name: $('baas_game_package').value.trim() || 'com.RoamingStar.BlueArchive',
-      current_activity: $('baas_current_activity').value.trim(),
-      banner_region: ($('baas_banner_region').value.split(',').map(s => parseInt(s.trim())).filter(n => Number.isFinite(n))).slice(0, 4) || [1109,133,1280,281],
       tasks: checked,
-    },
-    activity: {
-      data_source: 'gamekee',
-      server: $('baas_server').value,
-      push_story_on_new: $('act_push_story').checked,
-      push_mission_on_new: $('act_push_mission').checked,
-      push_challenge_on_new: $('act_push_challenge').checked,
-      // 前端没有对应控件的老字段：原样带回去（否则保存会把用户改过的值重置成默认）
-      push_before_sweep: acc().activity.push_before_sweep !== false,
-      inject_activity_resources: $('act_inject_resources').checked,
     },
     sweep: {
       strategy: $('sweep_strategy').value,
@@ -534,10 +532,23 @@ function collectConfig() {
     },
     notify_to_addrs: notifyAddrs.length ? notifyAddrs : null,
   };
+  // 全局活动设置（所有账号共用；「活动」页表单）
+  const region = $('baas_banner_region').value.split(',').map(s => parseInt(s.trim())).filter(n => Number.isFinite(n)).slice(0, 4);
   return {
     webui: cfg.webui,
     data_dir: cfg.data_dir,
     run_times: Math.max(1, parseInt($('run_times').value) || 1),
+    activity: {
+      data_source: (cfg.activity && cfg.activity.data_source) || 'gamekee',
+      current_activity: $('baas_current_activity').value.trim(),
+      banner_region: region.length === 4 ? region : ((cfg.activity && cfg.activity.banner_region) || [1109,133,1280,281]),
+      push_story_on_new: $('act_push_story').checked,
+      push_mission_on_new: $('act_push_mission').checked,
+      push_challenge_on_new: $('act_push_challenge').checked,
+      // 前端没有对应控件的老字段：原样带回去（否则保存会把用户改过的值重置成默认）
+      push_before_sweep: cfg.activity.push_before_sweep !== false,
+      inject_activity_resources: $('act_inject_resources').checked,
+    },
     notify: {
       enabled: $('notify_enabled').checked,
       attach_game_screenshot: $('notify_game_screenshot').checked,
@@ -594,7 +605,7 @@ function renderResourceReport(rep, ok) {
   if (rep.hint) lines.push('建议: ' + rep.hint);
   el.textContent = lines.join('\n');
   el.hidden = false;
-  toast(rep.ready ? '活动资源可用' : '活动资源未就绪（见「活动策略」下方提示）', !!rep.ready);
+  toast(rep.ready ? '活动资源可用' : '活动资源未就绪（见「活动」页下方提示）', !!rep.ready);
 }
 
 async function checkActivityResources() {

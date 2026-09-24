@@ -9,7 +9,8 @@
 - GET  /api/records          执行记录（?account=<id> 过滤）
 - GET  /api/activities       活动状态（?account=<id>，默认第一个账号）
 - POST /api/scan             手动刷新活动检测（?account=<id>）
-- GET  /api/activity-resources     活动资源自检（?account=<id>&module=<模块>）
+- GET  /api/activity-resources     活动资源自检（?account=<id>&module=<模块>；
+                             活动设置为全局，账号仅决定 BAAS 环境/服务器）
 - POST /api/activity-resources/frame  上传现场截图补齐活动模板（?kind=main|menu）
 - DELETE /api/activity-resources   删除本地补齐的活动资源（还原）
 - POST /api/run              手动触发执行（body.account=<id> 或 "all"；轮数取全局配置 run_times）
@@ -85,34 +86,36 @@ def create_app(config: AppConfig) -> FastAPI:
             try:
                 from ..baas_bridge import BaasBridge
 
-                bridge = BaasBridge(default_account, data_dir=config.data_path)
+                bridge = BaasBridge(
+                    default_account, data_dir=config.data_path, activity=config.activity
+                )
                 sync = bridge.sync_sweep_from_baas()
                 if sync.get("applied"):
                     save_config(config)
             except Exception as exc:  # noqa: BLE001
                 sync = {"ok": False, "reason": str(exc)}
         # 活动资源检查在**配置时**完成（不留给运行时报警）：开启了资源注入或手动
-        # 指定了活动模块的账号，保存时立即给出资源自检报告（缺什么、该怎么补）。
+        # 指定了活动模块（均为全局设置）时，保存后按账号逐个给出资源自检报告
+        # （各账号 BAAS 服务器不同，资源目录标识可能不同；缺什么、该怎么补）。
         resource_reports = []
-        for acc in config.accounts:
-            if not (
-                acc.activity.inject_activity_resources or acc.baas.current_activity
-            ):
-                continue
-            try:
-                from ..baas_bridge import BaasBridge
+        if config.activity.inject_activity_resources or config.activity.current_activity:
+            for acc in config.accounts:
+                try:
+                    from ..baas_bridge import BaasBridge
 
-                resource_reports.append(
-                    {
-                        "account": acc.id,
-                        "account_name": acc.name,
-                        "report": BaasBridge(acc, data_dir=config.data_path).activity_resource_report(),
-                    }
-                )
-            except Exception as exc:  # noqa: BLE001
-                resource_reports.append(
-                    {"account": acc.id, "account_name": acc.name, "error": str(exc)}
-                )
+                    resource_reports.append(
+                        {
+                            "account": acc.id,
+                            "account_name": acc.name,
+                            "report": BaasBridge(
+                                acc, data_dir=config.data_path, activity=config.activity
+                            ).activity_resource_report(),
+                        }
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    resource_reports.append(
+                        {"account": acc.id, "account_name": acc.name, "error": str(exc)}
+                    )
         return {"ok": True, "sync": sync, "resource_reports": resource_reports}
 
     @app.get("/api/tasks")
@@ -184,7 +187,7 @@ def create_app(config: AppConfig) -> FastAPI:
     @app.get("/api/activities")
     async def get_activities(account: Optional[str] = None) -> dict[str, Any]:
         acc = resolve_account(account)
-        fetcher = ActivityFetcher(acc.activity.server)
+        fetcher = ActivityFetcher(acc.baas.server)  # 数据源服务器跟随账号 BAAS 服务器
         try:
             current = await fetcher.fetch_all()
         except Exception as exc:  # noqa: BLE001
@@ -201,19 +204,19 @@ def create_app(config: AppConfig) -> FastAPI:
             "new": [e.__dict__ for e in current if e.key not in seen],
         }
 
-    # ---- 活动资源（当前服截图模板缺失时的检查/补齐）----
+    # ---- 活动资源（当前服截图模板缺失时的检查/补齐；活动设置为全局，账号仅提供 BAAS 环境）----
 
     def _activity_bridge(acc: AccountConfig):
-        """构造用于活动资源检查的 bridge（数据目录跟随全局 data_dir）"""
+        """构造用于活动资源检查的 bridge（数据目录跟随全局 data_dir，活动设置为全局）"""
         from ..baas_bridge import BaasBridge
 
-        return BaasBridge(acc, data_dir=config.data_path)
+        return BaasBridge(acc, data_dir=config.data_path, activity=config.activity)
 
     @app.get("/api/activity-resources")
     def get_activity_resources(
         account: Optional[str] = None, module: Optional[str] = None
     ) -> dict[str, Any]:
-        """活动资源自检报告（只读；配置页「活动策略 → 活动资源」展示）"""
+        """活动资源自检报告（只读；WebUI「活动 → 活动资源」展示）"""
         acc = resolve_account(account)
         try:
             bridge = _activity_bridge(acc)
@@ -268,9 +271,10 @@ def create_app(config: AppConfig) -> FastAPI:
         acc = resolve_account(account)
         engine = Engine(
             acc,
+            activity=config.activity,
             account_id=acc.id,
             store=store,
-            fetcher=ActivityFetcher(acc.activity.server),
+            fetcher=ActivityFetcher(acc.baas.server),
         )
         new_events = await engine.detect_new_activities()
         return {
@@ -386,7 +390,7 @@ def create_app(config: AppConfig) -> FastAPI:
         from ..baas_bridge import BaasBridge
 
         acc = resolve_account(account)
-        bridge = BaasBridge(acc)
+        bridge = BaasBridge(acc, activity=config.activity)
         try:
             adb = bridge.start_simulator()
             return {"ok": True, "adb": adb, "message": f"模拟器已启动，ADB 地址: {adb}"}
@@ -398,7 +402,7 @@ def create_app(config: AppConfig) -> FastAPI:
         from ..baas_bridge import BaasBridge
 
         acc = resolve_account(account)
-        bridge = BaasBridge(acc)
+        bridge = BaasBridge(acc, activity=config.activity)
         try:
             info = bridge.check_baas()
             return {"ok": True, **info}
@@ -414,7 +418,7 @@ def create_app(config: AppConfig) -> FastAPI:
         from ..baas_bridge import BaasBridge
 
         acc = resolve_account(account)
-        bridge = BaasBridge(acc)
+        bridge = BaasBridge(acc, activity=config.activity)
         out = Path(config.data_path) / "screenshots" / f"test_{acc.id}.png"
         try:
             adb = bridge.start_simulator()

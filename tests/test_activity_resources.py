@@ -68,7 +68,7 @@ def make_fake_baas_root(root: Path, *, with_module: bool = True, with_json: bool
 def bridge(tmp_path: Path, monkeypatch):
     cfg = AppConfig()
     cfg.accounts[0].baas.server = "cn"
-    cfg.accounts[0].baas.current_activity = MODULE
+    cfg.activity.current_activity = MODULE  # 活动设置为全局
     br = BaasBridge(cfg, data_dir=tmp_path / "data")
     root = make_fake_baas_root(tmp_path / "baas")
     monkeypatch.setattr(br, "_activity_resource_root", lambda: str(root))
@@ -159,11 +159,11 @@ def test_ensure_resources_needs_toggle_when_patch_ready(bridge):
     _install_patch(bridge)
     ok, why = bridge.ensure_activity_resources(MODULE)
     assert ok is False
-    assert "活动策略" in why and "开启" in why
+    assert "活动 → 活动资源" in why and "开启" in why
 
 
 def test_ensure_resources_injects_when_enabled(bridge, monkeypatch):
-    bridge.config.accounts[0].activity.inject_activity_resources = True
+    bridge.config.activity.inject_activity_resources = True  # 活动设置为全局
     _install_patch(bridge)
     calls = {}
 
@@ -180,7 +180,7 @@ def test_ensure_resources_injects_when_enabled(bridge, monkeypatch):
 
 
 def test_ensure_resources_patch_missing_hint(bridge):
-    bridge.config.accounts[0].activity.inject_activity_resources = True
+    bridge.config.activity.inject_activity_resources = True  # 活动设置为全局
     ok, why = bridge.ensure_activity_resources(MODULE)
     assert ok is False
     assert "上传" in why or "检查" in why
@@ -194,7 +194,7 @@ def test_inject_writes_baas_registries(tmp_path: Path, monkeypatch):
     import types
 
     cfg = AppConfig()
-    cfg.accounts[0].baas.current_activity = MODULE
+    cfg.activity.current_activity = MODULE
     br = BaasBridge(cfg, data_dir=tmp_path / "data")
     root = make_fake_baas_root(tmp_path / "baas")
     monkeypatch.setattr(br, "_activity_resource_root", lambda: str(root))
@@ -365,7 +365,7 @@ def test_install_activity_assets_rejects_unknown_kind(bridge):
 def test_install_activity_assets_without_boxes(tmp_path: Path, monkeypatch):
     cv2 = pytest.importorskip("cv2")
     cfg = AppConfig()
-    cfg.accounts[0].baas.current_activity = MODULE
+    cfg.activity.current_activity = MODULE
     br = BaasBridge(cfg, data_dir=tmp_path / "data")
     root = make_fake_baas_root(tmp_path / "baas", jp_xyrange=False)
     monkeypatch.setattr(br, "_activity_resource_root", lambda: str(root))

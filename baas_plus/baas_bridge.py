@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .config import AccountConfig, AppConfig, SweepConfig
+from .config import AccountConfig, ActivityConfig, AppConfig, SweepConfig
 from . import activity_assets
 
 logger = logging.getLogger(__name__)
@@ -197,9 +197,11 @@ class BaasBridge:
     """BAAS 操作封装（模拟器生命周期 + 任务执行 + 配置改写）
 
     config 接收 AccountConfig（推荐）或 AppConfig（兼容：内部字段路径一致）。
-    main 可注入共享的 BAAS Main（OCR 服务器进程）：多账号串行执行时复用
-    同一个 Main，避免每个账号重复拉起 OCR 服务器进程（create_baas 仅在
-    _main 为 None 时新建）。
+    activity 接收全局活动设置（ActivityConfig，所有账号共用）：缺省时从
+    AppConfig 上读取（AppConfig.activity），AccountConfig 不再持有活动配置，
+    未传时退回默认值。main 可注入共享的 BAAS Main（OCR 服务器进程）：多账号
+    串行执行时复用同一个 Main，避免每个账号重复拉起 OCR 服务器进程
+    （create_baas 仅在 _main 为 None 时新建）。
     """
 
     def __init__(
@@ -207,9 +209,14 @@ class BaasBridge:
         config: AppConfig | AccountConfig,
         main: Any | None = None,
         data_dir: str | Path | None = None,
+        activity: ActivityConfig | None = None,
     ) -> None:
         self.config = config
         self._main = main
+        if activity is None:
+            act = getattr(config, "activity", None)
+            activity = act if isinstance(act, ActivityConfig) else None
+        self.activity = activity if activity is not None else ActivityConfig()
         # 活动资源库根目录（默认 <data_dir>/activity_patches；测试可注入临时目录）
         self._data_dir = Path(data_dir) if data_dir else None
         self.baas_thread: Baas_thread | None = None
@@ -371,12 +378,12 @@ class BaasBridge:
     def _inject_configured_activity_resources(self) -> None:
         """init_all_data 之后注入配置里手动指定的活动模块资源（内存注入）
 
-        资源在 WebUI「活动策略 → 活动资源」里准备（配置时检查/上传截图），这里只做
+        资源在 WebUI「活动 → 活动资源」里准备（配置时检查/上传截图），这里只做
         静默注入：注入失败不影响本次执行，活动分支会按"资源未就绪"跳过并记日志。
         """
-        if not getattr(getattr(self.config, "activity", None), "inject_activity_resources", False):
+        if not self.activity.inject_activity_resources:
             return
-        module = getattr(self.config.baas, "current_activity", "") or ""
+        module = self.activity.current_activity or ""
         if not module or module in self.list_activity_modules():
             return
         if not self._patch_assets(module):
@@ -684,7 +691,7 @@ class BaasBridge:
     def activity_module_available(self, module_name: str) -> bool:
         """模块是否可用：当前服资源白名单 **或** 本地活动资源库已备齐
 
-        本地资源由 WebUI「活动策略 → 活动资源」准备（见 activity_assets），
+        本地资源由 WebUI「活动 → 活动资源」准备（见 activity_assets），
         运行时内存注入 BAAS，因此同样安全（不会让 BAAS 的资源初始化失败）。
         """
         if module_name in self.list_activity_modules():
@@ -755,14 +762,12 @@ class BaasBridge:
 
     def activity_resource_report(self, module: str | None = None) -> dict[str, Any]:
         """活动资源自检报告（WebUI 配置时展示；只读，不改 BAAS）"""
-        module = module or getattr(self.config.baas, "current_activity", "") or ""
+        module = module or self.activity.current_activity or ""
         identifier = self._server_identifier(self._activity_resource_root())
         report: dict[str, Any] = {
             "module": module,
             "identifier": identifier,
-            "inject_enabled": bool(
-                getattr(getattr(self.config, "activity", None), "inject_activity_resources", False)
-            ),
+            "inject_enabled": bool(self.activity.inject_activity_resources),
             "patch_dir": (
                 str(activity_assets.module_dir(self._activity_data_dir(), identifier, module))
                 if module and activity_assets.is_safe_name(module)
@@ -778,9 +783,9 @@ class BaasBridge:
         }
         if not module:
             report["issues"].append(
-                {"code": "no_module", "message": "未配置活动模块（baas.current_activity 为空）"}
+                {"code": "no_module", "message": "未配置活动模块（activity.current_activity 为空）"}
             )
-            report["hint"] = "先在「模拟器 & BAAS」里填写手动指定的活动模块名。"
+            report["hint"] = "先在「活动」页里填写手动指定的活动模块名。"
             return report
         if not activity_assets.is_safe_name(module):
             report["issues"].append({"code": "bad_module", "message": f"模块名不合法: {module!r}"})
@@ -878,7 +883,7 @@ class BaasBridge:
         kind="main"：主页截图 → 只裁 enter1（轮播图模板，可自校验）
         kind="menu"：活动内菜单截图 → 裁 enter2/enter3
         """
-        module = module or getattr(self.config.baas, "current_activity", "") or ""
+        module = module or self.activity.current_activity or ""
         if kind not in ("main", "menu"):
             return {"ok": False, "reason": f"未知的截图类型: {kind}", "report": None}
         report = self.activity_resource_report(module)
@@ -991,9 +996,9 @@ class BaasBridge:
         )
         detail = detail or report.get("hint") or "资源未就绪"
         if not inject_enabled:
-            detail += "；可在 WebUI「活动策略 → 活动资源」开启并补齐"
+            detail += "；可在 WebUI「活动 → 活动资源」开启并补齐"
         else:
-            detail += "；请在 WebUI「活动策略 → 活动资源」中检查并上传截图补齐"
+            detail += "；请在 WebUI「活动 → 活动资源」中检查并上传截图补齐"
         return False, detail
 
     def list_patched_modules(self) -> list[str]:
@@ -1083,7 +1088,7 @@ class BaasBridge:
         if img is None:
             logger.warning("轮播图模板匹配跳过：无截图帧")
             return None
-        region = tuple(self.config.baas.banner_region or [1109, 133, 1280, 281])
+        region = tuple(self.activity.banner_region or [1109, 133, 1280, 281])
         ratio = getattr(self.baas_thread, "ratio", 1.0) or 1.0
         banner = img[
             int(region[1] * ratio) : int(region[3] * ratio),
@@ -1153,7 +1158,7 @@ class BaasBridge:
         """
         if self.baas_thread is None or self.baas_thread.ocr is None:
             return ""
-        region = tuple(self.config.baas.banner_region or [1109, 133, 1280, 281])
+        region = tuple(self.activity.banner_region or [1109, 133, 1280, 281])
         try:
             update = getattr(self.baas_thread, "update_screenshot_array", None)
             if callable(update):

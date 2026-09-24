@@ -245,13 +245,13 @@ async def test_shared_main_injected_and_reclaimed(tmp_path):
 
 @pytest.mark.asyncio
 async def test_same_server_fetcher_shared(tmp_path):
-    """同服账号共享 ActivityFetcher 实例（数据源只建一个）"""
+    """同服账号共享 ActivityFetcher 实例（数据源只建一个；服务器跟随账号 baas.server）"""
     config = make_config(
         tmp_path,
         [
-            {"name": "A", "baas": {"tasks": []}, "activity": {"server": "cn"}},
-            {"name": "B", "baas": {"tasks": []}, "activity": {"server": "cn"}},
-            {"name": "C", "baas": {"tasks": []}, "activity": {"server": "jp"}},
+            {"name": "A", "baas": {"tasks": [], "server": "cn"}},
+            {"name": "B", "baas": {"tasks": [], "server": "cn"}},
+            {"name": "C", "baas": {"tasks": [], "server": "jp"}},
         ],
     )
     runner = make_runner(config, tmp_path)

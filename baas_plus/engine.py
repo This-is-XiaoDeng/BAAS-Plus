@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from .activity import ACTIVITY_MODULE_ALIASES, ActivityFetcher, EventType, GameEvent
 from .baas_bridge import BaasBridge, SWEEP_ITEM_RE, compute_sweep_times
-from .config import AccountConfig, SWEEP_TASKS
+from .config import AccountConfig, ActivityConfig, SWEEP_TASKS
 from .store import Store
 
 logger = logging.getLogger(__name__)
@@ -66,14 +66,16 @@ class RunResult:
 class Engine:
     """单个账号的一次执行编排（多账号时每个账号一个 Engine 实例）
 
-    构造接收账号配置（AccountConfig）；store 为全局共享（带 account 维度）。
-    bridge 可注入（多账号串行时由 MultiAccountRunner 传入共享 Main 的实例）。
+    构造接收账号配置（AccountConfig）与全局活动设置（ActivityConfig，所有账号
+    共用）；store 为全局共享（带 account 维度）。bridge 可注入（多账号串行时
+    由 MultiAccountRunner 传入共享 Main 的实例）。
     邮件通知由 MultiAccountRunner 在全部账号执行完成后统一发送汇总邮件。
     """
 
     def __init__(
         self,
         account: AccountConfig,
+        activity: ActivityConfig | None = None,
         account_id: str | None = None,
         store: StoreType | None = None,
         bridge: BaasBridge | None = None,
@@ -82,11 +84,15 @@ class Engine:
         capture_screenshot: bool = False,
     ) -> None:
         self.config = account
+        # 活动设置为全局配置（AppConfig.activity），不随账号变化；
+        # 未显式传入时退回默认值（调用方应传 AppConfig.activity）
+        self.activity = activity if activity is not None else ActivityConfig()
         self.account_id = account_id or account.id
         self.data_dir = data_dir
         self.store = store or Store(Path(data_dir or "data") / "baas_plus.db")
-        self.bridge = bridge or BaasBridge(account)
-        self.fetcher = fetcher or ActivityFetcher(account.activity.server)
+        self.bridge = bridge or BaasBridge(account, activity=self.activity)
+        # 活动数据源服务器跟随账号的 BAAS 服务器（cn/in/jp）
+        self.fetcher = fetcher or ActivityFetcher(account.baas.server)
         self.result = RunResult()
         # 执行完成后回游戏主界面并截图（写入 result.screenshot_path，供汇总邮件内联）
         self.capture_screenshot = capture_screenshot
@@ -125,8 +131,8 @@ class Engine:
         当前服资源时直接可用；只有本地资源库（WebUI 配置时补齐）时才注入，
         不满足则返回带原因的说明（区分 BAAS 版本过旧 / 当前服无资源 / 未准备）。
         """
-        if self.config.baas.current_activity:
-            manual = self.config.baas.current_activity
+        if self.activity.current_activity:
+            manual = self.activity.current_activity
             ok, why = self.bridge.ensure_activity_resources(manual)
             if ok:
                 return manual
@@ -148,18 +154,18 @@ class Engine:
         if module_name is None:
             logger.warning(
                 "检测到新活动「%s」但无法确定 BAAS 活动模块，跳过自动推图"
-                "（可在配置 baas.current_activity 或 WebUI 中指定）",
+                "（可在 WebUI「活动」页手动指定活动模块）",
                 event.title,
             )
             return executed
 
         self.bridge.set_current_activity(module_name)
         tasks = []
-        if self.config.activity.push_story_on_new:
+        if self.activity.push_story_on_new:
             tasks.append("explore_activity_story")
-        if self.config.activity.push_mission_on_new:
+        if self.activity.push_mission_on_new:
             tasks.append("explore_activity_mission")
-        if self.config.activity.push_challenge_on_new:
+        if self.activity.push_challenge_on_new:
             tasks.append("explore_activity_challenge")
         for task in tasks:
             try:
@@ -180,8 +186,8 @@ class Engine:
         （标题英文关键词 ↔ BAAS 模块名）。全部失败返回 None（跳过活动扫荡，
         避免扫到已结束/仅兑换可用的旧活动模块）。
         """
-        if self.config.baas.current_activity:
-            manual = self.config.baas.current_activity
+        if self.activity.current_activity:
+            manual = self.activity.current_activity
             ok, why = self.bridge.ensure_activity_resources(manual)
             if ok:
                 return manual, None
@@ -439,7 +445,7 @@ class Engine:
                     )
                     return False
 
-                if self.config.activity.push_before_sweep:
+                if self.activity.push_before_sweep:
                     # 先推图（打通任务至全 SSS；已 SSS 的关卡快速跳过）：
                     # BAAS 定位任务靠按钮模板匹配，未解锁任务的按钮样式不匹配，
                     # 不推图直接扫荡会定位失败（swipe_search_target_str 返回 None）；
@@ -658,12 +664,12 @@ class Engine:
                     "特别委托已改由扫荡阶段调度（无活动时按剩余体力），任务阶段跳过"
                 )
                 sweepless = [t for t in sweepless if t != "clear_special_task_power"]
-            # 活动推图已由「活动策略」配置统一调度（新活动自动推图），任务列表入口已
+            # 活动推图已由全局「活动」设置统一调度（新活动自动推图），任务列表入口已
             # 移除；旧配置残留 explore_activity_* 时跳过并提示，避免重复推图
             deprecated_act = [t for t in sweepless if t.startswith("explore_activity")]
             if deprecated_act:
                 logger.warning(
-                    "任务列表中的活动推图项已移除（%s），活动推图请在「活动策略」中配置",
+                    "任务列表中的活动推图项已移除（%s），活动推图请在 WebUI「活动」页配置",
                     ",".join(deprecated_act),
                 )
             sweepless = [t for t in sweepless if not t.startswith("explore_activity")]

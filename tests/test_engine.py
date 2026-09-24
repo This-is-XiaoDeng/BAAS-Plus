@@ -171,16 +171,18 @@ def make_engine(bridge=None, events=None, data_dir=None, account_id="acc_test", 
         import tempfile
 
         data_dir = tempfile.mkdtemp(prefix="baas_plus_test_")
-    # cfg_kwargs 的键与 AccountConfig 字段一致（baas/sweep/simulator/activity），
+    # cfg_kwargs 的键与 AccountConfig 字段一致（baas/sweep/simulator），
     # 作为首个账号配置传入（多账号结构）；account_id 固定，保证同 data_dir 下
     # 多次运行属于同一账号（活动状态/执行记录正确共享）
     app_kwargs: dict = {"data_dir": data_dir}
+    # 活动设置为全局（AppConfig.activity）：cfg_kwargs 里的 activity 提升到全局
+    activity_kwargs: dict = cfg_kwargs.pop("activity", None) or {}
     app_kwargs["accounts"] = [{"id": account_id, **cfg_kwargs}]
     config = AppConfig(**app_kwargs)
+    for key, value in activity_kwargs.items():
+        setattr(config.activity, key, value)
     # 默认给一个活动模块便于推图测试；显式传 current_activity 可覆盖（如 ""）
-    config.accounts[0].baas.current_activity = (cfg_kwargs.get("baas") or {}).get(
-        "current_activity", "SayBing"
-    )
+    config.activity.current_activity = activity_kwargs.get("current_activity", "SayBing")
     from pathlib import Path
 
     from baas_plus.store import Store
@@ -189,6 +191,7 @@ def make_engine(bridge=None, events=None, data_dir=None, account_id="acc_test", 
     store = Store(Path(data_dir) / "baas_plus.db")
     engine = Engine(
         account,
+        activity=config.activity,
         account_id=account.id,
         store=store,
         bridge=bridge or FakeBridge(),
@@ -417,7 +420,7 @@ async def test_sweep_tasks_skipped_in_task_phase(tmp_path):
         baas={"tasks": ["cafe_reward", "normal_task", "activity_sweep"]},
         sweep={"normal_tasks": ["15-1-99"]},
     )
-    engine.config.baas.current_activity = ""  # 无手动配置 + 无进行中活动 → 不扫活动
+    engine.activity.current_activity = ""  # 无手动配置 + 无进行中活动 → 不扫活动
     result = await engine.run_once()
     # 任务阶段只执行非扫荡任务；扫荡类在扫荡阶段按体力执行
     assert bridge.solves.count("cafe_reward") == 1
@@ -440,7 +443,7 @@ async def test_activity_sweep_selects_running_activity(tmp_path):
         bridge,
         events=[running],
         data_dir=str(tmp_path),
-        baas={"tasks": [], "current_activity": ""},
+        baas={"tasks": []}, activity={"current_activity": ""},
     )
     await engine.run_once()
     # 标题含英文关键词 CODE/BOX → 匹配 CodeBox，而非 BAAS 默认的旧活动模块
@@ -462,7 +465,7 @@ async def test_activity_sweep_skips_unmatched(tmp_path):
         bridge,
         events=[running],
         data_dir=str(tmp_path),
-        baas={"tasks": [], "current_activity": ""},
+        baas={"tasks": []}, activity={"current_activity": ""},
     )
     await engine.run_once()
     assert "activity_sweep" not in bridge.solves
@@ -484,7 +487,7 @@ async def test_activity_sweep_alias_match(tmp_path):
         bridge,
         events=[running],
         data_dir=str(tmp_path),
-        baas={"tasks": [], "current_activity": ""},
+        baas={"tasks": []}, activity={"current_activity": ""},
     )
     await engine.run_once()
     assert bridge.current_activity == "LivelyandBusily"
@@ -506,7 +509,7 @@ async def test_activity_sweep_alias_whitelist_gate(tmp_path):
         bridge,
         events=[running],
         data_dir=str(tmp_path),
-        baas={"tasks": [], "current_activity": ""},
+        baas={"tasks": []}, activity={"current_activity": ""},
     )
     await engine.run_once()
     assert "activity_sweep" not in bridge.solves
@@ -533,7 +536,7 @@ async def test_sweep_waits_for_banner_rotation(tmp_path):
         bridge,
         events=[running],
         data_dir=str(tmp_path),
-        baas={"tasks": [], "current_activity": ""},
+        baas={"tasks": []}, activity={"current_activity": ""},
     )
     await engine.run_once()
     assert bridge.current_activity == "LivelyandBusily"
@@ -555,7 +558,7 @@ async def test_sweep_skips_when_banner_never_matches(tmp_path):
         bridge,
         events=[running],
         data_dir=str(tmp_path),
-        baas={"tasks": [], "current_activity": ""},
+        baas={"tasks": []}, activity={"current_activity": ""},
     )
     ok = await engine._wait_for_activity_banner(["笑笑闹闹"], timeout=0.5)
     assert not ok
@@ -579,7 +582,7 @@ async def test_banner_template_match_hits_first(tmp_path):
         bridge,
         events=[running],
         data_dir=str(tmp_path),
-        baas={"tasks": [], "current_activity": ""},
+        baas={"tasks": []}, activity={"current_activity": ""},
     )
     await engine.run_once()
     assert bridge.current_activity == "LivelyandBusily"
@@ -602,7 +605,7 @@ async def test_banner_template_miss_falls_back_to_ocr(tmp_path):
         bridge,
         events=[running],
         data_dir=str(tmp_path),
-        baas={"tasks": [], "current_activity": ""},
+        baas={"tasks": []}, activity={"current_activity": ""},
     )
     await engine.run_once()
     assert bridge.solves.count("activity_sweep") == 1
@@ -650,8 +653,8 @@ async def test_activity_sweep_ensures_and_restores_main_page(tmp_path):
         bridge,
         events=[running],
         data_dir=str(tmp_path),
-        baas={"tasks": [], "current_activity": ""},
-        activity={"push_before_sweep": False},  # 只走活动扫荡一条路径，顺序确定
+        baas={"tasks": []},
+        activity={"current_activity": "", "push_before_sweep": False},  # 只走活动扫荡一条路径，顺序确定
     )
     await engine.run_once()
     # 扫描轮播图前先回主界面：首次 go_main_page 先于首次模板匹配 / OCR 扫描
@@ -701,8 +704,8 @@ async def test_activity_sweep_retries_on_ended_popup(tmp_path):
         bridge,
         events=[running],
         data_dir=str(tmp_path),
-        baas={"tasks": [], "current_activity": ""},
-        activity={"push_before_sweep": False},
+        baas={"tasks": []},
+        activity={"current_activity": "", "push_before_sweep": False},
     )
     result = await engine.run_once()
     assert bridge.solves.count("enter_current_activity") == 3
@@ -740,8 +743,8 @@ async def test_activity_sweep_skipped_when_ended_popup_persists(tmp_path):
         bridge,
         events=[running],
         data_dir=str(tmp_path),
-        baas={"tasks": [], "current_activity": ""},
-        activity={"push_before_sweep": False},
+        baas={"tasks": []},
+        activity={"current_activity": "", "push_before_sweep": False},
     )
     result = await engine.run_once()
     assert bridge.solves.count("activity_sweep") == 0
@@ -1065,7 +1068,7 @@ async def test_push_uses_baas_recorded_activity(tmp_path):
     bridge.current_activity_record = "SayBing"
     engine = make_engine(
         bridge, events=[event], data_dir=str(tmp_path),
-        baas={"current_activity": ""},
+        activity={"current_activity": ""},
     )
     result = await engine.run_once()
     assert bridge.current_activity == "SayBing"
@@ -1159,7 +1162,7 @@ async def test_special_task_sweep_skipped_when_activity_ongoing(tmp_path):
     engine = make_engine(
         bridge, events=[event], data_dir=str(tmp_path),
         sweep={"special_task_when_no_activity": True},
-        baas={"current_activity": ""},
+        activity={"current_activity": ""},
     )
     # 先做一次活动检测把进行中活动写入本地状态
     await engine.detect_new_activities()
@@ -1194,7 +1197,7 @@ async def test_special_task_sweep_failure_records_warning(tmp_path):
     engine = make_engine(
         bridge, events=[], data_dir=str(tmp_path),
         sweep={"special_task_when_no_activity": True},
-        baas={"current_activity": ""},  # 不选活动模块，排除活动扫荡干扰
+        activity={"current_activity": ""},  # 不选活动模块，排除活动扫荡干扰
     )
     swept = await engine.run_sweep()
     assert swept == []

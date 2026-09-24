@@ -22,6 +22,24 @@ def test_default_config():
     assert config.notify.email.smtp_host == "smtp.qq.com"
     # 兼容属性代理到默认账号
     assert config.baas is config.accounts[0].baas
+    # 活动设置为全局字段（真实字段而非代理）
+    assert config.activity.current_activity == ""
+    assert config.activity.banner_region == [1109, 133, 1280, 281]
+    assert config.activity.push_story_on_new is True
+    assert config.activity.inject_activity_resources is False
+
+
+def test_activity_config_is_global_not_per_account():
+    """活动设置挂在全局（AppConfig.activity），账号不再持有 activity"""
+    config = AppConfig(
+        activity={"current_activity": "SayBing"},
+        accounts=[{"name": "主号"}, {"name": "小号"}],
+    )
+    assert config.activity.current_activity == "SayBing"
+    assert not hasattr(config.accounts[0], "activity")
+    # 旧版 baas 上的活动字段也已移除
+    assert not hasattr(config.accounts[0].baas, "current_activity")
+    assert not hasattr(config.accounts[0].baas, "banner_region")
 
 
 def test_task_validation():
@@ -157,6 +175,72 @@ def test_migrate_legacy_config_wraps_account_fields():
     assert account["simulator"]["instance"] == 2
     assert account["baas"]["server"] == "jp"
     assert account["sweep"]["strategy"] == "fixed"
+    # 旧版账号级活动设置提升为全局 activity
+    assert migrated["activity"] == {"push_story_on_new": False}
+
+
+def test_migrate_legacy_activity_baas_fields_promoted():
+    """旧版 baas.current_activity / banner_region 提升为全局 activity 字段"""
+    data = {
+        "accounts": [
+            {
+                "id": "acc_a",
+                "baas": {"server": "cn", "current_activity": "SayBing"},
+                "activity": {"push_mission_on_new": True, "server": "cn"},
+            }
+        ]
+    }
+    migrated = _migrate_legacy_config(data)
+    assert migrated["activity"] == {
+        "push_mission_on_new": True,
+        "current_activity": "SayBing",
+    }
+
+
+def test_migrate_multi_account_activity_promoted_from_first_account():
+    """多账号旧配置：全局活动设置取 accounts[0]（不再按账号配置）"""
+    data = {
+        "accounts": [
+            {"id": "a1", "activity": {"push_story_on_new": False}, "baas": {"current_activity": "CodeBox"}},
+            {"id": "a2", "activity": {"push_story_on_new": True}},
+        ]
+    }
+    migrated = _migrate_legacy_config(data)
+    assert migrated["activity"]["push_story_on_new"] is False
+    assert migrated["activity"]["current_activity"] == "CodeBox"
+
+
+def test_migrate_keeps_existing_global_activity():
+    """已有全局 activity 时不被账号级旧字段覆盖（全局为准）"""
+    data = {
+        "activity": {"current_activity": "Kept"},
+        "accounts": [{"id": "a1", "activity": {"current_activity": "Old"}, "baas": {}}],
+    }
+    migrated = _migrate_legacy_config(data)
+    assert migrated["activity"] == {"current_activity": "Kept"}
+
+
+def test_load_legacy_activity_config_roundtrip(tmp_path):
+    """旧配置（账号级活动设置）加载后活动设置在全局，保存/加载往返一致"""
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "accounts": [
+                    {"id": "acc_a", "baas": {"server": "jp"}, "activity": {"push_mission_on_new": True}}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(str(path))
+    assert config.activity.push_mission_on_new is True
+    assert config.accounts[0].baas.server == "jp"
+    save_config(config, path)
+    reloaded = load_config(str(path))
+    assert reloaded.activity.push_mission_on_new is True
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["activity"]["push_mission_on_new"] is True
 
 
 def test_load_legacy_config_file(tmp_path):

@@ -3,9 +3,11 @@
 配置文件默认位于 data/config.json（可通过环境变量 BAAS_PLUS_CONFIG 覆盖）。
 
 多账号结构：AppConfig 持有账号列表（accounts），每个账号拥有独立的模拟器
-实例 / BAAS 配置 / 任务 / 扫荡 / 活动策略；webui、notify（SMTP 发件）、
-data_dir 为全局项。旧版单账号配置（顶层 simulator/baas/activity/sweep）在
-加载时自动迁移到 accounts[0]（见 _migrate_legacy_config）。
+实例 / BAAS 配置 / 任务 / 扫荡；活动设置（活动策略、当前活动模块、轮播图
+区域、资源补全等，ActivityConfig）与 webui、notify（SMTP 发件）、data_dir
+一样为**全局项**，所有账号共用。旧版单账号配置（顶层 simulator/baas/
+activity/sweep）在加载时自动迁移到 accounts[0]，活动设置提升为全局
+（见 _migrate_legacy_config）。
 """
 from __future__ import annotations
 
@@ -98,7 +100,7 @@ class BaasConfig(BaseModel):
     repo_dir: str = ""
     # BAAS 的配置目录名（BAAS 根目录 config/ 下的子目录，release 包自带 cn/global/jp/steam）
     config_dir: str = "cn"
-    # 服务器：cn / in / jp（影响活动数据与 BAAS 内部判断）
+    # 服务器：cn / in / jp（影响 BAAS 内部判断与活动数据源抓取）
     server: Literal["cn", "in", "jp"] = "cn"
     # BA 游戏包名（覆盖 BAAS 内置服务器→包名映射；默认国服官服）
     game_package_name: str = "com.RoamingStar.BlueArchive"
@@ -114,17 +116,20 @@ class BaasConfig(BaseModel):
             "friend",
         ]
     )
+
+
+class ActivityConfig(BaseModel):
+    """活动数据源与推图策略（**全局设置**，所有账号共用，不按账号区分）
+
+    旧版中 current_activity / banner_region 位于 BaasConfig、本模型按账号配置；
+    现统一提升为全局（AppConfig.activity），旧配置加载时自动迁移。
+    """
+
+    data_source: Literal["gamekee"] = "gamekee"  # 数据源（内置 GameKee 抓取，参考 BlueArchive.ics）
     # 手动指定 BAAS 活动模块名（对应 module/activities/<name>.py）；留空则由引擎从活动数据自动推断
     current_activity: str = ""
     # 主页活动轮播图区域（1280x720 分辨率下的 [x1, y1, x2, y2]，用于 OCR 识别当前横幅）
     banner_region: list[int] = Field(default_factory=lambda: [1109, 133, 1280, 281])
-
-
-class ActivityConfig(BaseModel):
-    """活动数据源与推图策略"""
-
-    data_source: Literal["gamekee"] = "gamekee"  # 数据源（内置 GameKee 抓取，参考 BlueArchive.ics）
-    server: Literal["cn", "in", "jp"] = "cn"
     # 检测到未推送过的新活动时，是否自动执行活动推图
     push_story_on_new: bool = True
     push_mission_on_new: bool = False
@@ -135,7 +140,7 @@ class ActivityConfig(BaseModel):
     push_before_sweep: bool = True
     # BAAS 尚未收录当前服活动截图资源时，用 BAAS-Plus 自己准备的模板在运行时
     # 注入 BAAS 的 image_dic / image_x_y_range（内存注入，不修改 BAAS 源码）。
-    # 资源在 WebUI「活动策略 → 活动资源」里检查/补齐（上传现场截图裁剪，见
+    # 资源在 WebUI「活动 → 活动资源」里检查/补齐（上传现场截图裁剪，见
     # baas_plus/activity_assets.py）；默认关闭 = 缺资源时直接跳过活动推图/扫荡。
     inject_activity_resources: bool = False
 
@@ -193,8 +198,9 @@ class WebUIConfig(BaseModel):
 class AccountConfig(BaseModel):
     """单个账号的完整执行配置（账号 = 一个模拟器实例 + 一套 BAAS 配置）
 
-    多账号时每个账号独立：模拟器多开实例、BAAS 配置目录、任务勾选、扫荡与
-    活动策略；通知收件人可用 notify_to_addrs 覆盖全局（None = 用全局）。
+    多账号时每个账号独立：模拟器多开实例、BAAS 配置目录、任务勾选与扫荡策略；
+    活动设置为全局（AppConfig.activity），通知收件人可用 notify_to_addrs 覆盖
+    全局（None = 用全局）。
     """
 
     # 稳定标识：改名不影响执行记录/活动状态关联（创建时自动生成，勿手改）
@@ -203,7 +209,6 @@ class AccountConfig(BaseModel):
     enabled: bool = True  # 是否参与批量执行（run 不带 --account 时）
     simulator: SimulatorConfig = Field(default_factory=SimulatorConfig)
     baas: BaasConfig = Field(default_factory=BaasConfig)
-    activity: ActivityConfig = Field(default_factory=ActivityConfig)
     sweep: SweepConfig = Field(default_factory=SweepConfig)
     # 通知收件人覆盖（None = 使用全局 notify.email.to_addrs）
     notify_to_addrs: Optional[list[str]] = None
@@ -217,10 +222,12 @@ class AccountConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    """全局配置：账号列表 + 全局项（WebUI / 通知 SMTP / 数据目录）"""
+    """全局配置：账号列表 + 全局项（活动设置 / WebUI / 通知 SMTP / 数据目录）"""
 
     webui: WebUIConfig = Field(default_factory=WebUIConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
+    # 活动数据源与推图策略（全局设置，所有账号共用）
+    activity: ActivityConfig = Field(default_factory=ActivityConfig)
     # 数据目录（活动状态、执行记录 SQLite 与配置文件的父目录）
     data_dir: str = "data"
     # 多次执行：全部账号执行完一轮后立即开始下一轮（无间隔），循环 run_times 轮。
@@ -229,8 +236,8 @@ class AppConfig(BaseModel):
     accounts: list[AccountConfig] = Field(default_factory=lambda: [AccountConfig()])
 
     # ---- 兼容属性：代理到默认账号（accounts[0]）----
-    # 旧代码/旧测试直接访问 config.simulator / config.baas / config.activity /
-    # config.sweep 时仍可用（多账号下应改用 accounts 列表）。
+    # 旧代码/旧测试直接访问 config.simulator / config.baas / config.sweep 时仍可用
+    # （多账号下应改用 accounts 列表）；activity 已是真实全局字段，无需代理。
     @property
     def simulator(self) -> SimulatorConfig:
         return self.accounts[0].simulator
@@ -246,14 +253,6 @@ class AppConfig(BaseModel):
     @baas.setter
     def baas(self, value: BaasConfig) -> None:
         self.accounts[0].baas = value
-
-    @property
-    def activity(self) -> ActivityConfig:
-        return self.accounts[0].activity
-
-    @activity.setter
-    def activity(self, value: ActivityConfig) -> None:
-        self.accounts[0].activity = value
 
     @property
     def sweep(self) -> SweepConfig:
@@ -283,31 +282,64 @@ class AppConfig(BaseModel):
 # 旧版单账号配置中属于账号的顶层字段
 LEGACY_ACCOUNT_FIELDS = ("simulator", "baas", "activity", "sweep")
 
+# 已全局化的活动字段（旧版位于账号 baas 子对象中，现归入全局 ActivityConfig）
+_GLOBAL_ACTIVITY_BAAS_KEYS = ("current_activity", "banner_region")
+
+
+def _promote_global_activity(data: dict) -> dict:
+    """把账号里的活动设置提升为全局 activity（活动设置不再按账号配置）
+
+    全局 activity 缺失时，取 accounts[0] 的活动配置（activity 对象 +
+    baas.current_activity / baas.banner_region）作为全局值；多账号下以
+    accounts[0] 为准（旧版 WebUI 保存时各账号的活动设置本就同步为相同值）。
+    仅在确有内容可提升时返回新 dict，否则原样返回（不做破坏性改写）。
+    """
+    if "activity" in data:
+        return data
+    accounts = data.get("accounts") or []
+    first = accounts[0] if accounts else None
+    if not isinstance(first, dict):
+        return data
+    act = dict(first.get("activity") or {})
+    baas = first.get("baas")
+    if isinstance(baas, dict):
+        for key in _GLOBAL_ACTIVITY_BAAS_KEYS:
+            if baas.get(key) is not None and key not in act:
+                act[key] = baas[key]
+    act.pop("server", None)  # server 不再属于活动配置（跟随各账号 baas.server）
+    if not act:
+        return data
+    migrated = dict(data)
+    migrated["activity"] = act
+    return migrated
+
 
 def _migrate_legacy_config(data: dict) -> dict:
     """旧版单账号配置（顶层 simulator/baas/activity/sweep）→ 新结构 accounts[0]
 
     升级前 data/config.json 把账号配置放在顶层；升级后搬到 accounts[0]
     （id 固定 acc_default，name="默认账号"）。notify/webui/data_dir 保持全局。
-    已是新结构（含 accounts）或非旧配置时原样返回，不做任何破坏性改写。
+    活动设置（activity 及 baas.current_activity / baas.banner_region）不再按
+    账号配置，统一提升为全局 activity（见 _promote_global_activity）。
+    已是最新结构（无账号级活动设置可提升）时原样返回，不做破坏性改写。
     """
-    if "accounts" in data:
-        return data
-    if not any(k in data for k in LEGACY_ACCOUNT_FIELDS):
-        return data
-    migrated = dict(data)
-    account: dict[str, object] = {
-        "id": "acc_default",
-        "name": "默认账号",
-        "enabled": True,
-    }
-    for key in LEGACY_ACCOUNT_FIELDS:
-        if key in migrated:
-            account[key] = migrated.pop(key)
-    if "notify_to_addrs" in migrated:  # 防御：旧配置不应出现，出现则归入账号
-        account["notify_to_addrs"] = migrated.pop("notify_to_addrs")
-    migrated["accounts"] = [account]
-    return migrated
+    if "accounts" not in data:
+        if not any(k in data for k in LEGACY_ACCOUNT_FIELDS):
+            return data
+        migrated = dict(data)
+        account: dict[str, object] = {
+            "id": "acc_default",
+            "name": "默认账号",
+            "enabled": True,
+        }
+        for key in LEGACY_ACCOUNT_FIELDS:
+            if key in migrated:
+                account[key] = migrated.pop(key)
+        if "notify_to_addrs" in migrated:  # 防御：旧配置不应出现，出现则归入账号
+            account["notify_to_addrs"] = migrated.pop("notify_to_addrs")
+        migrated["accounts"] = [account]
+        data = migrated
+    return _promote_global_activity(data)
 
 
 def load_config(path: str | None = None) -> AppConfig:

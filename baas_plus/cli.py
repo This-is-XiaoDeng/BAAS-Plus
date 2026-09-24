@@ -85,7 +85,8 @@ def cmd_scan(config_path: str | None, account: str | None = None) -> int:
 
     async def _scan() -> int:
         for acc in targets:
-            fetcher = ActivityFetcher(acc.activity.server)
+            # 活动数据源服务器跟随账号的 BAAS 服务器（cn/in/jp）
+            fetcher = ActivityFetcher(acc.baas.server)
             events = await fetcher.fetch_all()
             new_events = [e for e in events if not runner.store.is_activity_seen(acc.id, e)]
             print(f"\n===== 账号 [{acc.name}] 当前活动事件 {len(events)} 个，新事件 {len(new_events)} 个：=====")

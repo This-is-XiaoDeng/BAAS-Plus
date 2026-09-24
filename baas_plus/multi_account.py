@@ -50,7 +50,9 @@ class MultiAccountRunner:
         self._main = None
         # 按 server 缓存活动数据源（同服只建一个实例）
         self._fetchers: dict[str, ActivityFetcher] = {}
-        self._bridge_factory = bridge_factory or (lambda acc: BaasBridge(acc, main=self._main))
+        self._bridge_factory = bridge_factory or (
+            lambda acc: BaasBridge(acc, main=self._main, activity=self.config.activity)
+        )
         self._fetcher_factory = fetcher_factory or (lambda server: ActivityFetcher(server))
 
     # ---- 账号查找 ----
@@ -75,11 +77,14 @@ class MultiAccountRunner:
     # ---- 执行 ----
 
     def _new_engine(self, account: AccountConfig) -> Engine:
-        """为账号创建独立 Engine/Bridge；注入共享 Main 与同服 fetcher"""
+        """为账号创建独立 Engine/Bridge；注入共享 Main、全局活动设置与同服 fetcher"""
         bridge = self._bridge_factory(account)
-        fetcher = self._fetchers.setdefault(account.activity.server, self._fetcher_factory(account.activity.server))
+        # 活动数据源服务器跟随账号的 BAAS 服务器（同服只建一个 fetcher 实例）
+        server = account.baas.server
+        fetcher = self._fetchers.setdefault(server, self._fetcher_factory(server))
         return Engine(
             account,
+            activity=self.config.activity,
             account_id=account.id,
             store=self.store,
             bridge=bridge,

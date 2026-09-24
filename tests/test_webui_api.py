@@ -65,12 +65,13 @@ def test_report_without_baas_is_graceful(client, tmp_path):
         "/api/config",
         json={
             "data_dir": str(tmp_path),
+            # 活动设置为全局（AppConfig.activity），账号仅提供 BAAS 环境
+            "activity": {"inject_activity_resources": True, "current_activity": MODULE},
             "accounts": [
                 {
                     "id": "acc_test",
                     "name": "测试账号",
-                    "baas": {"repo_dir": "", "current_activity": MODULE},
-                    "activity": {"inject_activity_resources": True},
+                    "baas": {"repo_dir": ""},
                 }
             ],
         },
@@ -92,12 +93,12 @@ def test_upload_frame_and_delete(client, tmp_path, monkeypatch):
         "/api/config",
         json={
             "data_dir": str(tmp_path),
+            "activity": {"inject_activity_resources": True, "current_activity": MODULE},
             "accounts": [
                 {
                     "id": "acc_test",
                     "name": "测试账号",
-                    "baas": {"repo_dir": "", "current_activity": MODULE},
-                    "activity": {"inject_activity_resources": True},
+                    "baas": {"repo_dir": ""},
                 }
             ],
         },
@@ -146,12 +147,12 @@ def test_saved_config_reports_resource_state(client, tmp_path, monkeypatch):
         "/api/config",
         json={
             "data_dir": str(tmp_path),
+            "activity": {"inject_activity_resources": True, "current_activity": MODULE},
             "accounts": [
                 {
                     "id": "acc_test",
                     "name": "测试账号",
-                    "baas": {"repo_dir": "", "current_activity": MODULE},
-                    "activity": {"inject_activity_resources": True},
+                    "baas": {"repo_dir": ""},
                 }
             ],
         },
@@ -179,20 +180,17 @@ def test_saved_config_roundtrip_keeps_new_fields(client, tmp_path, _isolated_con
         "/api/config",
         json={
             "data_dir": str(tmp_path),
-            "accounts": [
-                {
-                    "id": "a1",
-                    "name": "n",
-                    "activity": {"inject_activity_resources": True, "push_before_sweep": False},
-                }
-            ],
+            # 活动设置为全局（AppConfig.activity），不随账号保存
+            "activity": {"inject_activity_resources": True, "push_before_sweep": False},
+            "accounts": [{"id": "a1", "name": "n"}],
         },
     )
     assert r.status_code == 200
     cfg = client.get("/api/config").json()
-    activity = cfg["accounts"][0]["activity"]
+    activity = cfg["activity"]
     assert activity["inject_activity_resources"] is True
     assert activity["push_before_sweep"] is False
+    assert "activity" not in cfg["accounts"][0]  # 账号不再持有活动设置
     # 旧配置（不含新字段）依然可用
     raw = json.loads(Path(_isolated_config_path).read_text(encoding="utf-8"))
-    assert raw["accounts"][0]["activity"]["inject_activity_resources"] is True
+    assert raw["activity"]["inject_activity_resources"] is True
