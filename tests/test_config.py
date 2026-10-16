@@ -338,3 +338,88 @@ def test_special_task_times_valid(times):
 def test_special_task_times_invalid_rejected(times):
     with pytest.raises(ValueError):
         AccountConfig(sweep={"special_task_times": times})
+
+
+# ---- 游戏内切换账号（AccountSwitchConfig） ----
+
+
+def _switch_accounts():
+    """构造主号/小号（游戏账号序号 1/2，共用默认 mumu 实例 0）的 accounts 配置"""
+    return [
+        {"name": "主号", "game_account_index": 1, "baas": {"tasks": []}},
+        {"name": "小号", "game_account_index": 2, "baas": {"tasks": []}},
+    ]
+
+
+def test_account_switch_defaults_off():
+    """默认关闭：旧配置无需任何 account_switch 字段即可正常加载"""
+    config = AppConfig()
+    assert config.account_switch.enabled is False
+    assert config.account_switch.switch_button == (60, 688)
+    assert config.account_switch.confirm_button == (736, 415)
+    assert config.account_switch.dropdown_button == (855, 315)
+    assert config.account_switch.enter_game_button == (642, 430)
+    assert config.account_switch.first_account_pos == (600, 420)
+    assert config.account_switch.account_row_height == 100
+    # 账号默认未设置游戏账号序号（0），不开启切换模式时无影响
+    assert config.accounts[0].game_account_index == 0
+
+
+def test_account_switch_roundtrip(tmp_path):
+    config = AppConfig(
+        account_switch={"enabled": True, "confirm_button": [700, 400], "dialog_timeout": 90},
+        accounts=_switch_accounts(),
+    )
+    path = save_config(config, str(tmp_path / "config.json"))
+    loaded = load_config(str(path))
+    assert loaded.account_switch.enabled is True
+    assert loaded.account_switch.confirm_button == (700, 400)
+    assert loaded.account_switch.dialog_timeout == 90.0
+    assert [a.game_account_index for a in loaded.accounts] == [1, 2]
+
+
+def test_account_switch_rejects_different_simulator_instances():
+    """切换模式开启时：多账号必须共用同一模拟器实例（不能再多开）"""
+    with pytest.raises(ValueError, match="同一个模拟器实例"):
+        AppConfig(
+            account_switch={"enabled": True},
+            accounts=[
+                {"name": "主号", "game_account_index": 1, "simulator": {"instance": 0}},
+                {"name": "小号", "game_account_index": 2, "simulator": {"instance": 1}},
+            ],
+        )
+
+
+def test_account_switch_rejects_missing_index():
+    """切换模式开启时：每个账号必须设置游戏账号序号（>= 1）"""
+    with pytest.raises(ValueError, match="游戏账号序号"):
+        AppConfig(
+            account_switch={"enabled": True},
+            accounts=[
+                {"name": "主号", "game_account_index": 1},
+                {"name": "小号", "game_account_index": 0},
+            ],
+        )
+
+
+def test_account_switch_rejects_duplicate_index():
+    """切换模式开启时：游戏账号序号必须互不相同（否则两个账号点到同一个号）"""
+    with pytest.raises(ValueError, match="互不相同"):
+        AppConfig(
+            account_switch={"enabled": True},
+            accounts=[
+                {"name": "主号", "game_account_index": 1},
+                {"name": "小号", "game_account_index": 1},
+            ],
+        )
+
+
+def test_index_zero_allowed_when_switch_disabled():
+    """切换模式关闭时：序号未设置（0）/重复都不影响配置加载（旧配置兼容）"""
+    config = AppConfig(
+        accounts=[
+            {"name": "主号", "simulator": {"instance": 0}},
+            {"name": "小号", "simulator": {"instance": 1}},
+        ]
+    )
+    assert [a.game_account_index for a in config.accounts] == [0, 0]

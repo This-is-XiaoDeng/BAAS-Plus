@@ -171,7 +171,8 @@
             <option value="bluestacks_nxt">蓝叠 5 国际版</option>
             <option value="bluestacks_nxt_cn">蓝叠 5 中国版</option>
           </select></div>
-        <div><label>多开实例（0 起，每账号一个）</label><input id="sim_instance" type="number" value="0"></div>
+        <div><label>多开实例（0 起）</label><input id="sim_instance" type="number" value="0"></div>
+        <div><label title="游戏内切换账号模式下，本账号对应 Yostar 登录界面账号下拉列表中的第几个游戏账号（从 1 开始，0 = 未设置）">游戏账号序号</label><input id="acc_game_index" type="number" min="0" value="0"></div>
       </div>
       <div class="chk"><label><input type="checkbox" id="sim_auto_restart" checked> 读取体力失败时自动重启模拟器恢复（游戏失联自愈）</label></div>
       <label>BAAS 源码目录（repo_dir，留空用已安装包）</label><input id="baas_repo_dir" placeholder="C:\BAAS">
@@ -188,6 +189,32 @@
         <button class="btn ghost" onclick="testBaas()">🧪 测试 BAAS</button>
       </div>
       <pre id="test_result" hidden></pre>
+    </div>
+
+    <div class="card">
+      <h2>🔁 游戏内切换账号（全局设置）</h2>
+      <div class="chk"><label><input type="checkbox" id="switch_enabled"> 启用：多账号共用一个模拟器实例，执行前在登录界面自动切换游戏账号（不再模拟器多开）</label></div>
+      <p class="hint">开启后所有账号必须使用<b>同一个模拟器实例</b>（多开编号一致），每个账号在上方「游戏账号序号」里填自己在 Yostar 登录界面账号下拉列表中（从上往下）的序号（从 1 开始）：每个账号执行开始时 BAAS-Plus 会重启游戏 → 点「切换账号」→「确定」→ 在 Yostar 账号选择框里点选该序号的账号 →「进入游戏」，避免多开占内存/重复登录。各账号仍保留独立的任务勾选、扫荡策略、BAAS 配置目录与收件人覆盖。</p>
+      <details>
+        <summary>高级：切换流程坐标与等待（1280x720 基准，默认值来自实机标注）</summary>
+        <div class="row">
+          <div><label>「切换账号」按钮 x,y</label><input id="sw_switch_button" placeholder="60,688"></div>
+          <div><label>确认弹窗「确定」x,y</label><input id="sw_confirm_button" placeholder="736,415"></div>
+        </div>
+        <div class="row">
+          <div><label>下拉框 x,y</label><input id="sw_dropdown_button" placeholder="855,315"></div>
+          <div><label>「进入游戏」按钮 x,y</label><input id="sw_enter_game_button" placeholder="642,430"></div>
+        </div>
+        <div class="row">
+          <div><label>过渡页点空白处 x,y</label><input id="sw_blank_click" placeholder="640,360"></div>
+          <div><label>账号列表第 1 项 x,y</label><input id="sw_first_account_pos" placeholder="600,420"></div>
+        </div>
+        <div class="row">
+          <div><label>账号条目行高（px）</label><input id="sw_account_row_height" type="number" value="100"></div>
+          <div><label>等「进入游戏」出现超时（秒）</label><input id="sw_dialog_timeout" type="number" value="60"></div>
+        </div>
+        <p class="hint">仅在分辨率/游戏版本更新导致点击错位时修改；模拟器分辨率非 720p 时 BAAS 会自动按比例缩放坐标。</p>
+      </details>
     </div>
 
     <div class="card">
@@ -357,6 +384,19 @@ function typeLabel(t) {
   return { event: '🎉 活动', assault: '⚔️ 总力战/大决战', card: '🎴 卡池', other: 'ℹ️ 其他' }[t] || t;
 }
 
+// 界面坐标 "x,y" 文本 ↔ [x, y]（无效时回退 fallback 字符串）
+function _pair(arr, fallback) {
+  return Array.isArray(arr) && arr.length === 2 ? arr.join(',') : fallback;
+}
+function _parsePair(text, fallback) {
+  const p = (text || '').split(',').map(s => parseInt(s.trim())).filter(n => Number.isFinite(n));
+  return p.length === 2 ? [p[0], p[1]] : fallback;
+}
+function _parsePair4(text, fallback) {
+  const p = (text || '').split(',').map(s => parseInt(s.trim())).filter(n => Number.isFinite(n));
+  return p.length === 4 ? p : fallback;
+}
+
 // ---- 页签切换（hash 路由：#home / #config / #activity / #mail / #records） ----
 
 function switchTab(name) {
@@ -427,6 +467,7 @@ function loadForm() {
   $('acc_name').value = a.name;
   $('sim_type').value = a.simulator.type;
   $('sim_instance').value = a.simulator.instance;
+  $('acc_game_index').value = a.game_account_index || 0;
   $('sim_auto_restart').checked = a.simulator.auto_restart_on_failure !== false;  // 兼容旧配置（默认开启）
   $('baas_repo_dir').value = a.baas.repo_dir;
   loadConfigDirs(a.baas.config_dir);
@@ -443,6 +484,17 @@ function loadForm() {
   $('sweep_special_task').checked = !!a.sweep.special_task_when_no_activity;
   $('sweep_special_task_times').value = a.sweep.special_task_times || '0,max';
   $('acc_notify_to_addrs').value = (a.notify_to_addrs || []).join(',');
+  // 游戏内切换账号（全局设置；兼容旧配置里 account_switch 缺失时的默认值）
+  const sw = cfg.account_switch || {};
+  $('switch_enabled').checked = !!sw.enabled;
+  $('sw_switch_button').value = _pair(sw.switch_button, '60,688');
+  $('sw_confirm_button').value = _pair(sw.confirm_button, '736,415');
+  $('sw_dropdown_button').value = _pair(sw.dropdown_button, '855,315');
+  $('sw_enter_game_button').value = _pair(sw.enter_game_button, '642,430');
+  $('sw_blank_click').value = _pair(sw.blank_click, '640,360');
+  $('sw_first_account_pos').value = _pair(sw.first_account_pos, '600,420');
+  $('sw_account_row_height').value = sw.account_row_height != null ? sw.account_row_height : 100;
+  $('sw_dialog_timeout').value = sw.dialog_timeout != null ? sw.dialog_timeout : 60;
   // 全局活动设置（「活动」页，不随账号变化；兼容旧配置里 activity 缺失时的默认值）
   const g = cfg.activity || {};
   $('baas_current_activity').value = g.current_activity || '';
@@ -511,6 +563,7 @@ function collectConfig() {
     ...accRest,
     name: $('acc_name').value.trim() || acc().name,
     enabled: $('acc_enabled').checked,
+    game_account_index: Math.max(0, parseInt($('acc_game_index').value) || 0),
     simulator: { type: $('sim_type').value, instance: parseInt($('sim_instance').value) || 0, auto_restart_on_failure: $('sim_auto_restart').checked },
     baas: {
       repo_dir: $('baas_repo_dir').value.trim(),
@@ -532,16 +585,30 @@ function collectConfig() {
     },
     notify_to_addrs: notifyAddrs.length ? notifyAddrs : null,
   };
-  // 全局活动设置（所有账号共用；「活动」页表单）
-  const region = $('baas_banner_region').value.split(',').map(s => parseInt(s.trim())).filter(n => Number.isFinite(n)).slice(0, 4);
+  // 游戏内切换账号（全局设置）：旧配置里没有的字段兜底默认值
+  const oldSw = cfg.account_switch || {};
   return {
     webui: cfg.webui,
     data_dir: cfg.data_dir,
     run_times: Math.max(1, parseInt($('run_times').value) || 1),
+    account_switch: {
+      enabled: $('switch_enabled').checked,
+      switch_button: _parsePair($('sw_switch_button').value, oldSw.switch_button || [60, 688]),
+      confirm_button: _parsePair($('sw_confirm_button').value, oldSw.confirm_button || [736, 415]),
+      dropdown_button: _parsePair($('sw_dropdown_button').value, oldSw.dropdown_button || [855, 315]),
+      enter_game_button: _parsePair($('sw_enter_game_button').value, oldSw.enter_game_button || [642, 430]),
+      blank_click: _parsePair($('sw_blank_click').value, oldSw.blank_click || [640, 360]),
+      first_account_pos: _parsePair($('sw_first_account_pos').value, oldSw.first_account_pos || [600, 420]),
+      account_row_height: parseInt($('sw_account_row_height').value) || (oldSw.account_row_height ?? 100),
+      dialog_timeout: parseFloat($('sw_dialog_timeout').value) || (oldSw.dialog_timeout ?? 60),
+      // 前端没有对应控件的老字段：原样带回去（否则保存会把用户改过的值重置成默认）
+      app_start_timeout: oldSw.app_start_timeout != null ? oldSw.app_start_timeout : 120,
+    },
+    // 全局活动设置（所有账号共用；「活动」页表单）
     activity: {
       data_source: (cfg.activity && cfg.activity.data_source) || 'gamekee',
       current_activity: $('baas_current_activity').value.trim(),
-      banner_region: region.length === 4 ? region : ((cfg.activity && cfg.activity.banner_region) || [1109,133,1280,281]),
+      banner_region: _parsePair4($('baas_banner_region').value, (cfg.activity && cfg.activity.banner_region) || [1109,133,1280,281]),
       push_story_on_new: $('act_push_story').checked,
       push_mission_on_new: $('act_push_mission').checked,
       push_challenge_on_new: $('act_push_challenge').checked,

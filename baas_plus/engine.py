@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from .activity import ACTIVITY_MODULE_ALIASES, ActivityFetcher, EventType, GameEvent
 from .baas_bridge import BaasBridge, SWEEP_ITEM_RE, compute_sweep_times
-from .config import AccountConfig, ActivityConfig, SWEEP_TASKS
+from .config import AccountConfig, AccountSwitchConfig, ActivityConfig, SWEEP_TASKS
 from .store import Store
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,12 @@ class Engine:
     共用）；store 为全局共享（带 account 维度）。bridge 可注入（多账号串行时
     由 MultiAccountRunner 传入共享 Main 的实例）。
     邮件通知由 MultiAccountRunner 在全部账号执行完成后统一发送汇总邮件。
+
+    游戏内切换模式（account_switch.enabled）：多账号不再一账号一个模拟器实例，
+    而是共用同一模拟器——启动路径改为「登录界面切换 Yostar 游戏账号」（见
+    bridge.switch_game_account）；reuse_adb 为上一账号保留下来的模拟器 ADB
+    地址（非 None 时跳过 start_simulator），stop_simulator_on_finish 控制执行
+    完后是否关闭模拟器（中间账号 False，最后一轮最后的账号 True）。
     """
 
     def __init__(
@@ -82,11 +88,21 @@ class Engine:
         fetcher: ActivityFetcher | None = None,
         data_dir: str | None = None,
         capture_screenshot: bool = False,
+        account_switch: AccountSwitchConfig | None = None,
+        reuse_adb: str | None = None,
+        stop_simulator_on_finish: bool = True,
     ) -> None:
         self.config = account
         # 活动设置为全局配置（AppConfig.activity），不随账号变化；
         # 未显式传入时退回默认值（调用方应传 AppConfig.activity）
         self.activity = activity if activity is not None else ActivityConfig()
+        # 游戏内切换账号（全局设置，AccountSwitchConfig）：enabled 时启动路径改为
+        # 「登录界面切换 Yostar 游戏账号」而非 launch_game，多账号共用同一模拟器
+        self.account_switch = account_switch if account_switch is not None else AccountSwitchConfig()
+        # 游戏内切换模式下复用上一账号保持运行的模拟器（None = 自己 start_simulator）
+        self.reuse_adb = reuse_adb
+        # 执行完成后是否关闭模拟器（游戏内切换模式下，中间账号设 False 保机轮换）
+        self.stop_simulator_on_finish = stop_simulator_on_finish
         self.account_id = account_id or account.id
         self.data_dir = data_dir
         self.store = store or Store(Path(data_dir or "data") / "baas_plus.db")
@@ -629,8 +645,12 @@ class Engine:
                             update["local"],
                             update["url"],
                         )
-            # 1. 模拟器 + BAAS
-            adb = self.bridge.start_simulator()
+            # 1. 模拟器 + BAAS（游戏内切换模式且有既存模拟器时直接复用，不重启）
+            if self.account_switch.enabled and self.reuse_adb:
+                adb = self.reuse_adb
+                logger.info("游戏内切换模式：复用运行中的模拟器（ADB %s），不重新启动", adb)
+            else:
+                adb = self.bridge.start_simulator()
             self.bridge.create_baas(adb)
 
             # 2. 活动检测与推图
@@ -641,15 +661,28 @@ class Engine:
                     pushed = self.push_new_activity(event)
                     self.result.pushed_activities.extend(pushed)
 
-            # 3. BAAS-Plus 用配置的 BA 包名显式启动游戏并进入主界面
-            # （不走裸 solve('restart')：BA 已在前台时 restart 不会 to_main_page；
-            #  launch_game = app_start(配置包名) + to_main_page，包名配置真正生效）
-            try:
-                self.bridge.launch_game()
-                self.result.executed_tasks.append("restart")
-            except Exception as exc:  # noqa: BLE001
-                logger.error("启动游戏失败: %s", exc)
-                self.result.status = "partial"
+            # 3. 启动游戏并进入主界面。游戏内切换模式下由 switch_game_account
+            #    全程负责（重启 BA → 登录界面切换 Yostar 账号 → 进入游戏 → 回主界面），
+            #    不能再走 launch_game（app_start 会打断登录切换流程）；
+            #    切换失败直接抛出：后续日常任务可能打到上一个（身份不明）游戏账号，
+            #    会误消耗竞技场券/体力，宁可整轮失败
+            if self.account_switch.enabled:
+                try:
+                    self.bridge.switch_game_account(self.config.game_account_index)
+                    self.result.executed_tasks.append("switch_account")
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("切换游戏账号失败: %s", exc)
+                    raise RuntimeError(f"切换游戏账号失败: {exc}") from exc
+            else:
+                #    BAAS-Plus 用配置的 BA 包名显式启动游戏并进入主界面
+                #   （不走裸 solve('restart')：BA 已在前台时 restart 不会 to_main_page；
+                #    launch_game = app_start(配置包名) + to_main_page，包名配置真正生效）
+                try:
+                    self.bridge.launch_game()
+                    self.result.executed_tasks.append("restart")
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("启动游戏失败: %s", exc)
+                    self.result.status = "partial"
 
             # 4. 勾选任务（扫荡类任务由扫荡阶段统一调度）；arena 与常规任务穿插：
             #    arena 冷却等待（asyncio.sleep）期间让出事件循环，常规任务继续跑
@@ -710,7 +743,9 @@ class Engine:
             self.result.summary = f"执行失败: {exc}"
             self.store.finish_record(record_id, "failed", self.result.summary, {"error": str(exc)})
         finally:
-            self.bridge.stop()
+            # 按需关闭模拟器：游戏内切换模式下中间账号不关机（下一账号直接复用），
+            # 只在整轮最后一个账号执行完后才真正关机
+            self.bridge.stop(stop_simulator=self.stop_simulator_on_finish)
         return self.result
 
     def _build_summary(self) -> str:

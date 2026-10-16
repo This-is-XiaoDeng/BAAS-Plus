@@ -10,6 +10,10 @@
     python -m baas_plus.cli test-ocr                 # 调试：打印主页轮播图 OCR 原始文本
     python -m baas_plus.cli reset-push               # 重置已推送/已推图的活动标记
     python -m baas_plus.cli reset-push --key <key>   # 只重置指定活动
+
+多账号默认「一账号一个模拟器多开实例」串行执行；开启全局 account_switch
+（游戏内切换账号）后，多账号改为共用一个模拟器实例，每个账号执行前在游戏
+登录界面自动切换 Yostar 游戏账号（见 README「游戏内切换账号」与 WebUI 配置页）。
 """
 from __future__ import annotations
 

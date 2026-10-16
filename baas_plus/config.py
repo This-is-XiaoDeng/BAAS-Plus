@@ -8,6 +8,11 @@
 一样为**全局项**，所有账号共用。旧版单账号配置（顶层 simulator/baas/
 activity/sweep）在加载时自动迁移到 accounts[0]，活动设置提升为全局
 （见 _migrate_legacy_config）。
+
+游戏内切换账号（AccountSwitchConfig，全局）：开启后多账号不再「一账号一个
+模拟器多开实例」，而是共用同一个模拟器实例，在每个账号执行开始时通过游戏
+登录界面（Yostar 账号选择框）切换游戏账号；每个账号需配置自身在 Yostar
+下拉列表中的序号（AccountConfig.game_account_index，从 1 开始）。
 """
 from __future__ import annotations
 
@@ -190,23 +195,57 @@ class NotifyConfig(BaseModel):
     attach_game_screenshot: bool = False
 
 
+class AccountSwitchConfig(BaseModel):
+    """游戏内切换账号（全局设置，替代「一账号一个模拟器多开实例」）
+
+    开启后多账号共用同一个模拟器实例：每个账号执行开始时先回到游戏登录界面，
+    通过「切换账号 → 确定 → Yostar 账号选择框」点选自己的游戏账号再进入游戏。
+    坐标均为 1280x720 基准（baas.click 内部按实际分辨率缩放），默认值取自
+    实机截图标注（登录界面 / 确认弹窗 / Yostar 选择框）。
+    """
+
+    enabled: bool = False  # 开启后各账号 game_account_index 必须互不相同且 >= 1
+    # 登录界面左下角「切换账号」按钮
+    switch_button: tuple[int, int] = (60, 688)
+    # 「您确定要切换账号吗?」确认弹窗的「确定」按钮
+    confirm_button: tuple[int, int] = (736, 415)
+    # 登出后的标题过渡页：点击空白处打开 Yostar 账号选择框
+    blank_click: tuple[int, int] = (640, 360)
+    # Yostar 账号选择框：账号条目右侧的下拉箭头（展开账号列表）
+    dropdown_button: tuple[int, int] = (855, 315)
+    # Yostar 账号选择框：「进入游戏」按钮
+    enter_game_button: tuple[int, int] = (642, 430)
+    # 展开后的账号列表中第一个账号条目（第 n 个账号为其 y + (n-1)×行高）
+    first_account_pos: tuple[int, int] = (600, 420)
+    # 账号条目的纵向间距（实测相邻两条目 y 相差 100px）
+    account_row_height: int = 100
+    # 重启 BA 后等待登录界面出现的最长时间（秒；模拟器性能差/首次冷启动时调大）
+    app_start_timeout: float = 120.0
+    # 登出后等待 Yostar 账号选择框出现的最长时间（秒）
+    dialog_timeout: float = 60.0
+
+
 class WebUIConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 18080
 
 
 class AccountConfig(BaseModel):
-    """单个账号的完整执行配置（账号 = 一个模拟器实例 + 一套 BAAS 配置）
+    """单个账号的完整执行配置
 
-    多账号时每个账号独立：模拟器多开实例、BAAS 配置目录、任务勾选与扫荡策略；
-    活动设置为全局（AppConfig.activity），通知收件人可用 notify_to_addrs 覆盖
-    全局（None = 用全局）。
+    多账号时每个账号独立：模拟器多开实例（游戏内切换模式下改为共用同一实例）、
+    Yostar 游戏账号序号、BAAS 配置目录、任务勾选与扫荡策略；活动设置为全局
+    （AppConfig.activity），通知收件人可用 notify_to_addrs 覆盖全局（None = 用全局）。
     """
 
     # 稳定标识：改名不影响执行记录/活动状态关联（创建时自动生成，勿手改）
     id: str = Field(default_factory=lambda: f"acc_{uuid.uuid4().hex[:8]}")
     name: str = "默认账号"
     enabled: bool = True  # 是否参与批量执行（run 不带 --account 时）
+    # 本账号在 Yostar 登录界面「账号下拉列表」中的序号（1 起，从上往下数）。
+    # 仅游戏内切换账号模式（AppConfig.account_switch.enabled）下使用；0 = 未设置
+    # （切换模式下校验会拒绝，避免所有账号默认落在第 1 个游戏账号把日志打错号）。
+    game_account_index: int = Field(default=0, ge=0)
     simulator: SimulatorConfig = Field(default_factory=SimulatorConfig)
     baas: BaasConfig = Field(default_factory=BaasConfig)
     sweep: SweepConfig = Field(default_factory=SweepConfig)
@@ -228,6 +267,9 @@ class AppConfig(BaseModel):
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
     # 活动数据源与推图策略（全局设置，所有账号共用）
     activity: ActivityConfig = Field(default_factory=ActivityConfig)
+    # 游戏内切换账号（全局设置：开启后多账号共用一个模拟器实例，靠游戏内
+    # 「切换账号」轮换游戏账号，不再为每个账号开一个模拟器）
+    account_switch: AccountSwitchConfig = Field(default_factory=AccountSwitchConfig)
     # 数据目录（活动状态、执行记录 SQLite 与配置文件的父目录）
     data_dir: str = "data"
     # 多次执行：全部账号执行完一轮后立即开始下一轮（无间隔），循环 run_times 轮。
@@ -269,6 +311,24 @@ class AppConfig(BaseModel):
         ids = [a.id for a in self.accounts]
         if len(ids) != len(set(ids)):
             raise ValueError(f"账号 id 重复: {ids}")
+        # 游戏内切换模式的合法性：同一模拟器实例 + 唯一且已设置的 Yostar 账号序号
+        # （不满足时游戏内切换会点错账号 / 打到同一个号，宁可配置阶段就报错）
+        if self.account_switch.enabled:
+            indexes = [a.game_account_index for a in self.accounts]
+            if any(i < 1 for i in indexes):
+                raise ValueError(
+                    "游戏内切换账号模式下，每个账号必须设置游戏账号序号"
+                    "（game_account_index，Yostar 下拉列表中从上往下的序号，从 1 开始）"
+                )
+            if len(indexes) != len(set(indexes)):
+                raise ValueError(f"游戏账号序号必须互不相同: {indexes}")
+            if len(self.accounts) > 1:
+                sim_keys = {(a.simulator.type, a.simulator.instance) for a in self.accounts}
+                if len(sim_keys) > 1:
+                    raise ValueError(
+                        "游戏内切换账号模式下，所有账号必须共用同一个模拟器实例"
+                        "（模拟器类型与多开编号完全一致），不能再多开"
+                    )
         return self
 
     @property

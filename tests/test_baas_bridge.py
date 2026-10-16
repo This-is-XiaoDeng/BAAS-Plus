@@ -436,3 +436,153 @@ def test_solve_does_not_leak_stale_next_time(bridge, monkeypatch):
     monkeypatch.setattr(bridge.baas_thread, "solve", fake_solve)
     bridge.solve("arena")
     assert bridge.last_next_time == 0
+
+# ---- 游戏内切换账号（switch_game_account） ----
+
+
+class FakeU2ForSwitch:
+    """记录 app_stop/app_start 调用的假 u2 连接"""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+
+    def app_stop(self, pkg):
+        self.calls.append(("app_stop", pkg))
+
+    def app_start(self, pkg, activity=None):
+        self.calls.append(("app_start", pkg))
+
+
+class FakeSwitchBaasThread:
+    """切换账号流程用的假 Baas_thread：点击/OCR 序列/to_main_page 全记录"""
+
+    def __init__(self, ocr_texts, img):
+        self._ocr_texts = list(ocr_texts)  # 每次 OCR 弹出一个文本（用尽后保持最后一个）
+        self.ocr = self
+        self.latest_img_array = img
+        self.ratio = 1.0
+        self.u2 = FakeU2ForSwitch()
+        self.clicks: list[tuple[int, int]] = []
+        self.to_main_page_calls = 0
+        self.refreshes = 0
+
+    def ocr_for_single_line(self, **kwargs):
+        if self._ocr_texts:
+            return self._ocr_texts.pop(0)
+        return ""
+
+    def update_screenshot_array(self):
+        self.refreshes += 1
+
+    def click(self, x, y):
+        self.clicks.append((x, y))
+
+    def to_main_page(self):
+        self.to_main_page_calls += 1
+
+
+def _switch_bridge(bridge, sw_kwargs=None):
+    """构造 game_package_name 已设置的 bridge（fixture bridge + 切换配置）"""
+    bridge.config.baas.game_package_name = "com.custom.bluearchive"
+    if sw_kwargs:
+        from baas_plus.config import AccountSwitchConfig
+
+        bridge.account_switch = AccountSwitchConfig(**sw_kwargs)
+    return bridge
+
+
+def test_switch_game_account_full_sequence(bridge, no_sleep):
+    """完整切换流程：重启 BA → 登录界面 → 切换账号 → 确定 → 等选择框 → 下拉框 → 第 2 个账号 → 进入游戏"""
+    baas = FakeSwitchBaasThread(
+        ocr_texts=["切换账号", "进入游戏", ""],
+        img=_blank_screen(),
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    bridge.switch_game_account(2)
+    # 1. 强杀并重启 BA 游戏进程（到登录界面）
+    assert baas.u2.calls == [
+        ("app_stop", "com.custom.bluearchive"),
+        ("app_start", "com.custom.bluearchive"),
+    ]
+    # 2. 切换账号(60,688) → 确定(736,415) → 下拉框(855,315) → 第 2 个账号(600,520) → 进入游戏(642,430)
+    assert baas.clicks == [(60, 688), (736, 415), (855, 315), (600, 520), (642, 430)]
+    # 3. 进入游戏后回主界面
+    assert baas.to_main_page_calls == 1
+
+
+def test_switch_game_account_skips_logout_when_dialog_direct(bridge, no_sleep):
+    """重启后 Yostar 选择框直接弹出（OCR 到「进入游戏」）：跳过切换账号/确定，直接点选"""
+    # OCR 序列：第 1 次查「切换账号」区域得到空文本，第 2 次查「进入游戏」区域命中
+    baas = FakeSwitchBaasThread(ocr_texts=["", "进入游戏", ""], img=_blank_screen())
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    bridge.switch_game_account(1)
+    # 没有「切换账号」「确定」步骤；第 1 个账号 y=420
+    assert baas.clicks == [(855, 315), (600, 420), (642, 430)]
+
+
+def test_switch_game_account_clicks_blank_until_dialog(bridge, no_sleep):
+    """登出过渡页：重复点空白处唤出选择框，OCR 到后立即停手"""
+    baas = FakeSwitchBaasThread(
+        ocr_texts=["切换账号", "", "", "进入游戏", ""],
+        img=_blank_screen(),
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    bridge.switch_game_account(3)
+    # 确认后第 1/2 轮未弹出 → 点空白(640,360)两次；第 3 轮 OCR 到后不再点击
+    assert baas.clicks == [
+        (60, 688), (736, 415),
+        (640, 360), (640, 360),
+        (855, 315), (600, 620),  # 第 3 个账号 = first.y + 2×行高
+        (642, 430),
+    ]
+
+
+def test_switch_game_account_rejects_invalid_index(bridge, no_sleep):
+    """序号 < 1：不执行任何点击/OFF 操作，直接抛错"""
+    baas = FakeSwitchBaasThread(ocr_texts=["切换账号"], img=_blank_screen())
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    with pytest.raises(RuntimeError, match="序号不合法"):
+        bridge.switch_game_account(0)
+    assert baas.u2.calls == []
+    assert baas.clicks == []
+
+
+@pytest.mark.parametrize(
+    "texts,match_text",
+    [
+        (["不知道"], "等待登录界面超时"),
+        (["切换账号"], "等待 Yostar 账号选择框超时"),
+    ],
+)
+def test_switch_game_account_timeout_raises(bridge, no_sleep, texts, match_text):
+    """OCR 一直识别不到目标按钮：超时抛 RuntimeError（带排查指引）"""
+    baas = FakeSwitchBaasThread(ocr_texts=texts, img=_blank_screen())
+    bridge = _switch_bridge(bridge, sw_kwargs={"app_start_timeout": 0.2, "dialog_timeout": 0.2})
+    bridge.baas_thread = baas
+    with pytest.raises(RuntimeError, match=match_text):
+        bridge.switch_game_account(1)
+
+
+def test_switch_game_account_requires_baas_thread(bridge):
+    """Baas_thread 未初始化：直接抛 RuntimeError"""
+    bridge = _switch_bridge(bridge)
+    with pytest.raises(RuntimeError, match="Baas_thread 未初始化"):
+        bridge.switch_game_account(1)
+
+
+def test_stop_can_keep_simulator_running(bridge, monkeypatch):
+    """stop(stop_simulator=False)：停止 BAAS 线程但保留模拟器（切换模式传机用）"""
+    from baas_plus.baas_bridge import BaasBridge
+
+    stopped = []
+    monkeypatch.setattr(BaasBridge, "_stop_simulator", lambda self: stopped.append(True))
+    bridge.stop(stop_simulator=False)
+    assert bridge.baas_thread is None
+    assert stopped == []  # 模拟器未关
+    bridge.stop(stop_simulator=True)
+    assert stopped == [True]
+

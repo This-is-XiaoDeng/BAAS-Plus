@@ -12,15 +12,20 @@ class FakeBridge:
     def __init__(self, ap=120):
         self.ap = ap
         self.started = False
+        self.stop_calls: list[bool] = []  # stop(stop_simulator=...) 的入参记录
+        self.switched: list[int] = []  # 游戏内切换账号调用的序号记录
+        self.adb_used: list[str] = []  # create_baas 收到的 ADB 地址记录
         self.solves: list[str] = []
         self._main = None  # Runner 注入共享 Main 的位置
+        self.adb_address = None  # 对齐真实 bridge：start_simulator 后回填
 
     def start_simulator(self):
         self.started = True
-        return "127.0.0.1:16384"
+        self.adb_address = "127.0.0.1:16384"
+        return self.adb_address
 
     def create_baas(self, adb_address=None):
-        assert adb_address == "127.0.0.1:16384"
+        self.adb_used.append(adb_address)
 
     def launch_game(self):
         self.solves.append("restart")
@@ -94,8 +99,13 @@ class FakeBridge:
     def close_announcement_popups(self, timeout=30.0):
         return True
 
-    def stop(self):
-        pass
+    def stop(self, stop_simulator=True):
+        self.stop_calls.append(stop_simulator)
+
+    def switch_game_account(self, account_index):
+        self.solves.append("switch_account")
+        self.switched.append(account_index)
+        return True
 
 
 class FakeFetcher:
@@ -530,3 +540,106 @@ def test_notify_summary_screenshot_only_final_round(tmp_path, monkeypatch):
     assert len(imgs) == 2  # 每账号恰好一张（小号回退到第 1 轮）
     cids = {img.get("Content-ID") for img in imgs}
     assert cids == {f"<ba_{config.accounts[0].id}>", f"<ba_{config.accounts[1].id}>"}
+
+
+# ---- 游戏内切换账号模式（多账号共用一个模拟器实例，靠登录界面切号轮换） ----
+
+
+@pytest.mark.asyncio
+async def test_switch_mode_reuses_simulator_between_accounts(tmp_path):
+    """切换模式：账号间不重启/不关闭模拟器，下一账号复用上一账号的 ADB 地址"""
+    config = make_config(
+        tmp_path,
+        [
+            {"name": "主号", "game_account_index": 1, "baas": {"tasks": []}, "sweep": {"activity_first": False}},
+            {"name": "小号", "game_account_index": 2, "baas": {"tasks": []}, "sweep": {"activity_first": False}},
+        ],
+    )
+    config.account_switch.enabled = True
+    bridges: list[FakeBridge] = []
+
+    def factory(acc):
+        b = FakeBridge()
+        b.name = acc.name
+        bridges.append(b)
+        return b
+
+    runner = make_runner(config, tmp_path, bridge_factory=factory)
+    rounds = await runner.run_all()
+    results = rounds[0]
+    # 两个账号都执行成功，各自完成了自身序号的游戏账号切换
+    assert all(r.status == "success" for _, r in results)
+    assert bridges[0].switched == [1]
+    assert bridges[1].switched == [2]
+    # 第一个账号启动了模拟器，第二个账号直接复用（start_simulator 未被调用）
+    assert bridges[0].started is True
+    assert bridges[1].started is False
+    # 复用的 ADB 地址即第一次启动发现的地址（create_baas 收到同一地址）
+    assert bridges[1].adb_used == ["127.0.0.1:16384"]
+    # 中间账号不关模拟器，最后一个账号执行完才关机
+    assert bridges[0].stop_calls == [False]
+    assert bridges[1].stop_calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_switch_mode_multi_round_keeps_simulator_between_rounds(tmp_path):
+    """切换模式 + 多轮：轮与轮之间同样保机切换，仅最后轮最后账号关机"""
+    config = make_config(
+        tmp_path,
+        [
+            {"name": "主号", "game_account_index": 1, "baas": {"tasks": []}},
+            {"name": "小号", "game_account_index": 2, "baas": {"tasks": []}},
+        ],
+    )
+    config.account_switch.enabled = True
+    config.run_times = 2
+    bridges: list[FakeBridge] = []
+
+    def factory(acc):
+        b = FakeBridge()
+        bridges.append(b)
+        return b
+
+    runner = make_runner(config, tmp_path, bridge_factory=factory)
+    rounds = await runner.run_all()
+    assert len(rounds) == 2
+    # 除最后一个账号外全部保机（stop_calls == [False]）
+    assert [c for b in bridges for c in b.stop_calls] == [False, False, False, True]
+
+
+@pytest.mark.asyncio
+async def test_switch_mode_single_account_run_keeps_stop(tmp_path):
+    """切换模式单账号：执行完正常关闭模拟器（i==0 即最后一个）"""
+    config = make_config(
+        tmp_path, [{"name": "主号", "game_account_index": 1, "baas": {"tasks": []}}]
+    )
+    config.account_switch.enabled = True
+    runner = make_runner(config, tmp_path)
+    _, result = await runner.run_account(config.accounts[0].id)
+    assert result.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_switch_mode_second_account_falls_back_when_no_adb(tmp_path):
+    """上一账号没留下 ADB 地址（启动早期失败）时，下一账号回退自行 start_simulator"""
+    config = make_config(
+        tmp_path,
+        [
+            {"name": "主号", "game_account_index": 1, "baas": {"tasks": []}},
+            {"name": "小号", "game_account_index": 2, "baas": {"tasks": []}},
+        ],
+    )
+    config.account_switch.enabled = True
+
+    class BoomBridge(FakeBridge):
+        def start_simulator(self):
+            raise RuntimeError("模拟器启动失败")
+
+    def factory(acc):
+        return BoomBridge() if acc.name == "主号" else FakeBridge()
+
+    runner = make_runner(config, tmp_path, bridge_factory=factory)
+    rounds = await runner.run_all()
+    results = {runner.get_account(aid).name: r for rr in rounds for aid, r in rr}
+    assert results["主号"].status == "failed"
+    assert results["小号"].status == "success"  # 独立启动模拟器，不受影响

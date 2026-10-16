@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .config import AccountConfig, ActivityConfig, AppConfig, SweepConfig
+from .config import AccountConfig, AccountSwitchConfig, ActivityConfig, AppConfig, SweepConfig
 from . import activity_assets
 
 logger = logging.getLogger(__name__)
@@ -82,6 +82,14 @@ MISSION_ARMOR_MAP = {
 # 与匹配文本：进入已结束的活动时游戏弹出结束提示，而非进入活动菜单。
 ACTIVITY_ENDED_OCR_REGION = (857, 349, 1029, 426)
 ACTIVITY_ENDED_TEXT = "活动时间已结束"
+
+# 游戏内切换账号流程的 OCR 识别区域（1280x720 基准坐标，_ocr_region 按 ratio 缩放）：
+# - 登录界面左下角「切换账号」按钮：识别到它说明游戏已回到登录界面
+# - Yostar 账号选择框的「进入游戏」按钮：识别到它说明选择框已弹出，可点选账号
+SWITCH_BUTTON_OCR_REGION = (20, 650, 180, 720)
+SWITCH_BUTTON_TEXT = "切换账号"
+ENTER_GAME_OCR_REGION = (500, 385, 900, 465)
+ENTER_GAME_TEXT = "进入游戏"
 
 
 def import_baas(repo_dir: str = "") -> Any:
@@ -202,6 +210,8 @@ class BaasBridge:
     未传时退回默认值。main 可注入共享的 BAAS Main（OCR 服务器进程）：多账号
     串行执行时复用同一个 Main，避免每个账号重复拉起 OCR 服务器进程
     （create_baas 仅在 _main 为 None 时新建）。
+    account_switch 接收全局的游戏内切换账号设置（AccountSwitchConfig）：
+    提供 switch_game_account 所需的界面坐标与超时，缺省用默认坐标。
     """
 
     def __init__(
@@ -210,6 +220,7 @@ class BaasBridge:
         main: Any | None = None,
         data_dir: str | Path | None = None,
         activity: ActivityConfig | None = None,
+        account_switch: AccountSwitchConfig | None = None,
     ) -> None:
         self.config = config
         self._main = main
@@ -217,10 +228,14 @@ class BaasBridge:
             act = getattr(config, "activity", None)
             activity = act if isinstance(act, ActivityConfig) else None
         self.activity = activity if activity is not None else ActivityConfig()
+        self.account_switch = account_switch if account_switch is not None else AccountSwitchConfig()
         # 活动资源库根目录（默认 <data_dir>/activity_patches；测试可注入临时目录）
         self._data_dir = Path(data_dir) if data_dir else None
         self.baas_thread: Baas_thread | None = None
         self._started = False
+        # 启动模拟器时发现并保存的 ADB 地址（游戏内切换模式下，后续账号直接
+        # 复用运行中的模拟器，不重新 start_simulator）
+        self.adb_address: str | None = None
 
     # ---- 模拟器 ----
 
@@ -255,6 +270,7 @@ class BaasBridge:
 
         self._wait_simulator_ready(adb_address, wait_timeout)
         self._started = True
+        self.adb_address = adb_address
         return adb_address
 
     def _wait_simulator_ready(self, adb_address: str, timeout: int = 180) -> None:
@@ -1383,6 +1399,143 @@ class BaasBridge:
         logger.warning("等待公告弹窗关闭超时（%.0fs），仍有弹窗可能残留", timeout)
         return False
 
+    def _ocr_contains(self, region: tuple[int, int, int, int], keyword: str) -> bool:
+        """OCR 指定区域并判断是否包含关键词（空白/换行归一化，容 OCR 空格插入）"""
+        text = self._ocr_region(region)
+        if not text:
+            return False
+        return keyword in text.replace(" ", "").replace("\n", "")
+
+    def switch_game_account(self, account_index: int) -> None:
+        """游戏内切换到第 account_index 个 Yostar 游戏账号（替代模拟器多开）
+
+        多账号共用一个模拟器实例时（AppConfig.account_switch.enabled），
+        每个账号执行开始时走该流程。完整步骤（坐标 1280x720 基准，
+        AccountSwitchConfig 可覆盖；baas.click 内部按实际分辨率缩放）：
+
+        1. 强杀 BA 游戏进程后重新拉起：任务结束后游戏停在主界面，只有登录
+           界面才有「切换账号」按钮，杀进程重开是确定的复位方式（Yostar
+           登录态由 SDK 持久化，重启后登录界面仍可账号切换）；
+        2. 等待登录界面（OCR「切换账号」按钮）→ 点击「切换账号」；
+        3. 「您确定要切换账号吗?」弹窗 → 点击「确定」，游戏登出；
+        4. 登出后的标题过渡页：轮询点击空白处 直到 OCR 到 Yostar 账号选择框
+           的「进入游戏」按钮（若拉起后选择框直接弹出则跳过登出步骤）；
+        5. 点击下拉箭头展开账号列表 → 点击第 account_index 个账号条目
+           （第 n 个 = first_account_pos.y + (n-1) × account_row_height）；
+        6. 点击「进入游戏」→ BAAS to_main_page + 关公告弹窗回主界面。
+
+        account_index 从 1 开始（须与用户在 Yostar 选择框列表里看到的顺序
+        一致）；任何一步失败抛 RuntimeError（引擎将整个执行标记 failed，
+        绝不在身份不明的账号上继续执行日常任务——竞技场券/体力会被误消耗）。
+        """
+        if self.baas_thread is None:
+            raise RuntimeError("Baas_thread 未初始化，请先调用 create_baas()")
+        if not isinstance(account_index, int) or account_index < 1:
+            raise RuntimeError(
+                f"游戏账号序号不合法: {account_index!r}（应为 Yostar 下拉列表中的序号，从 1 开始）"
+            )
+        sw = self.account_switch
+        baas = self.baas_thread
+        u2 = getattr(baas, "u2", None)
+        if u2 is None:
+            raise RuntimeError("设备连接未就绪（u2 未初始化），无法切换游戏账号")
+        pkg = self.config.baas.game_package_name
+        logger.info("游戏内切换账号: 目标第 %d 个游戏账号（包 %s）", account_index, pkg)
+
+        # 1. 重启 BA 到登录界面
+        try:
+            u2.app_stop(pkg)
+            time.sleep(2)
+            u2.app_start(pkg, None)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"重启 BA 游戏进程失败: {exc}") from exc
+        # 2. 等登录界面（「切换账号」按钮），少数情况下选择框直接弹出（「进入游戏」）
+        state = self._wait_login_screen(sw.app_start_timeout)
+        if state == "switch":
+            self._click_account_switch(sw, account_index)
+            # 4. 登出过渡页 → 等 Yostar 账号选择框（点空白处唤出）
+            self._wait_yostar_dialog(sw.dialog_timeout)
+        # 5./6. 展开账号列表 → 选账号 → 进入游戏 → 回主界面
+        self._select_account_and_enter(sw, account_index)
+        logger.info("游戏账号切换完成（第 %d 个），已回主界面", account_index)
+
+    def _click_account_switch(self, sw: AccountSwitchConfig, account_index: int) -> None:
+        """登录界面点「切换账号」→ 确认弹窗「确定」（发起登出）"""
+        logger.info("登录界面: 点击「切换账号」%s", sw.switch_button)
+        self.baas_thread.click(*sw.switch_button)
+        time.sleep(1.5)
+        # 确认弹窗（「您确定要切换账号吗??」）出现后点「确定」
+        time.sleep(0.5)
+        logger.info("确认弹窗: 点击「确定」%s", sw.confirm_button)
+        self.baas_thread.click(*sw.confirm_button)
+        time.sleep(2)  # 登出动画/加载
+
+    def _wait_login_screen(self, timeout: float) -> str:
+        """重启 BA 后等待登录界面就绪
+
+        优先识别登录界面的「切换账号」按钮；若 Yostar 账号选择框直接弹出
+        （OCR 到「进入游戏」按钮），返回 "dialog" 调用方可跳过登出流程。
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                if self._ocr_contains(SWITCH_BUTTON_OCR_REGION, SWITCH_BUTTON_TEXT):
+                    logger.info("已回到登录界面（识别到「切换账号」按钮）")
+                    return "switch"
+                if self._ocr_contains(ENTER_GAME_OCR_REGION, ENTER_GAME_TEXT):
+                    logger.info("Yostar 账号选择框已直接弹出，跳过登出步骤")
+                    return "dialog"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("登录界面 OCR 检测异常（继续等待）: %s", exc)
+            time.sleep(2)
+        raise RuntimeError(
+            f"等待登录界面超时（{timeout:.0f}s）：未识别到「{SWITCH_BUTTON_TEXT}」按钮，"
+            "请确认模拟器分辨率/游戏版本与配置坐标匹配（WebUI「游戏内切换账号」可调）"
+        )
+
+    def _wait_yostar_dialog(self, timeout: float) -> None:
+        """登出后的标题过渡页：等待 Yostar 账号选择框出现（OCR「进入游戏」按钮）
+
+        期间周期性点击空白处唤出选择框；每轮先 OCR 再点击，选择框一旦出现
+        立即停止点击，避免点在弹窗上把已出现的选择框关掉。
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                if self._ocr_contains(ENTER_GAME_OCR_REGION, ENTER_GAME_TEXT):
+                    logger.info("Yostar 账号选择框已弹出（识别到「进入游戏」按钮）")
+                    return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Yostar 选择框 OCR 检测异常（继续等待）: %s", exc)
+            logger.info("登录过渡页: 点击空白处唤出账号选择框 %s", self.account_switch.blank_click)
+            self.baas_thread.click(*self.account_switch.blank_click)
+            time.sleep(2)
+        raise RuntimeError(
+            f"等待 Yostar 账号选择框超时（{timeout:.0f}s）：未识别到「{ENTER_GAME_TEXT}」按钮，"
+            "请确认已登录过 Yostar 账号、且坐标配置与当前游戏版本一致"
+        )
+
+    def _select_account_and_enter(self, sw: AccountSwitchConfig, account_index: int) -> None:
+        """展开账号下拉列表 → 点击第 account_index 个账号 → 「进入游戏」→ 回主界面"""
+        x, y = sw.first_account_pos
+        target = (x, y + (account_index - 1) * sw.account_row_height)
+        logger.info("展开账号下拉列表 %s", sw.dropdown_button)
+        self.baas_thread.click(*sw.dropdown_button)
+        time.sleep(1.2)
+        logger.info(
+            "点击第 %d 个游戏账号 %s（列表第 1 项在 %s，行高 %d）",
+            account_index, target, sw.first_account_pos, sw.account_row_height,
+        )
+        self.baas_thread.click(*target)
+        time.sleep(1.2)
+        logger.info("点击「进入游戏」%s", sw.enter_game_button)
+        self.baas_thread.click(*sw.enter_game_button)
+        # 进入游戏后为加载/启动画面：复用 BAAS to_main_page（处理启动画面/弹窗，
+        # 等主界面 RGB 特征），再主动关闭一次性公告弹窗
+        self.baas_thread.to_main_page()
+        self.close_announcement_popups(timeout=30)
+        logger.info("已进入游戏并回到主界面（游戏内切换账号流程完成）")
+
     def click_banner_enter(self) -> None:
         """立即点击轮播图当前页的「进入活动」按钮（activity_enter1 @ (1196,195)）
 
@@ -1687,15 +1840,20 @@ class BaasBridge:
             "pushed": pushed,
         }
 
-    def stop(self) -> None:
-        """停止 BAAS 线程并关闭模拟器（执行完成后调用）"""
+    def stop(self, stop_simulator: bool = True) -> None:
+        """停止 BAAS 线程并按需关闭模拟器（执行完成后调用）
+
+        stop_simulator=False 用于游戏内切换账号模式：多账号共用同一模拟器
+        实例，账号切换后下一账号还要继续用，只在最后一个账号执行完后关机。
+        """
         if self.baas_thread is not None:
             try:
                 self.baas_thread.stop_thread() if hasattr(self.baas_thread, "stop_thread") else None
             except Exception as exc:  # noqa: BLE001
                 logger.warning("停止 BAAS 线程异常: %s", exc)
         self.baas_thread = None
-        self._stop_simulator()
+        if stop_simulator:
+            self._stop_simulator()
 
     def _stop_simulator(self) -> None:
         """关闭模拟器（对齐启动时的类型/实例；未启动/已关闭时幂等）"""

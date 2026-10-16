@@ -7,6 +7,12 @@
   _main 为 None 时新建，Runner 注入后取回继续传给下一个账号）；
 - ActivityFetcher：按 server 缓存实例（同服活动数据只需拉取一次）。
 
+游戏内切换账号模式（AppConfig.account_switch.enabled）：所有账号共用同一个
+模拟器实例，不再为每个账号多开——上一账号执行完不关模拟器，下一账号直接
+复用其 ADB 地址（Engine.reuse_adb），由引擎在启动阶段通过登录界面切换
+Yostar 游戏账号（见 baas_bridge.switch_game_account）；只在整轮最后一个
+账号执行完后关闭模拟器。
+
 多次执行（run_times）：全部账号执行完一轮后立即开始下一轮（无间隔），
 循环配置的轮数；轮与轮之间同样复用 BAAS Main（OCR 服务器只起一个）。
 
@@ -51,9 +57,17 @@ class MultiAccountRunner:
         # 按 server 缓存活动数据源（同服只建一个实例）
         self._fetchers: dict[str, ActivityFetcher] = {}
         self._bridge_factory = bridge_factory or (
-            lambda acc: BaasBridge(acc, main=self._main, activity=self.config.activity)
+            lambda acc: BaasBridge(
+                acc,
+                main=self._main,
+                activity=self.config.activity,
+                account_switch=self.config.account_switch,
+            )
         )
         self._fetcher_factory = fetcher_factory or (lambda server: ActivityFetcher(server))
+        # 运行中模拟器的 ADB 地址（游戏内切换模式下跨账号复用；start 后回填）
+        self._last_adb: str | None = None
+        self._switch_mode = bool(getattr(config, "account_switch", None) and config.account_switch.enabled)
 
     # ---- 账号查找 ----
 
@@ -76,8 +90,17 @@ class MultiAccountRunner:
 
     # ---- 执行 ----
 
-    def _new_engine(self, account: AccountConfig) -> Engine:
-        """为账号创建独立 Engine/Bridge；注入共享 Main、全局活动设置与同服 fetcher"""
+    def _new_engine(
+        self,
+        account: AccountConfig,
+        reuse_adb: str | None = None,
+        stop_simulator_on_finish: bool = True,
+    ) -> Engine:
+        """为账号创建独立 Engine/Bridge；注入共享 Main、全局活动设置与同服 fetcher
+
+        游戏内切换模式下 reuse_adb 为上一账号留下的模拟器 ADB 地址（复用运行
+        中的模拟器），stop_simulator_on_finish=False 时账号执行完不关模拟器。
+        """
         bridge = self._bridge_factory(account)
         # 活动数据源服务器跟随账号的 BAAS 服务器（同服只建一个 fetcher 实例）
         server = account.baas.server
@@ -91,23 +114,42 @@ class MultiAccountRunner:
             fetcher=fetcher,
             data_dir=str(self.config.data_path),
             capture_screenshot=self.config.notify.attach_game_screenshot,
+            account_switch=self.config.account_switch,
+            reuse_adb=reuse_adb,
+            stop_simulator_on_finish=stop_simulator_on_finish,
         )
 
-    async def run_account(self, ref: str) -> tuple[str, RunResult]:
+    async def run_account(
+        self,
+        ref: str,
+        *,
+        reuse_adb: str | None = None,
+        stop_simulator_on_finish: bool = True,
+    ) -> tuple[str, RunResult]:
         """执行单个账号；执行阶段异常兜底为 failed 结果（不向外抛，保证失败隔离）
 
         注意：账号解析（get_account）失败抛 ValueError，由调用方（CLI 外层 /
         WebUI resolve_account）处理，不在兜底范围内。
+        reuse_adb / stop_simulator_on_finish 仅游戏内切换模式使用（见 _new_engine）。
         """
         account = self.get_account(ref)
         logger.info(
-            "===== 开始执行账号 [%s] (id=%s, 模拟器 %s 实例 %s) =====",
+            "===== 开始执行账号 [%s] (id=%s, 模拟器 %s 实例 %s%s) =====",
             account.name,
             account.id,
             account.simulator.type,
             account.simulator.instance,
+            (
+                f", 游戏账号序号 {account.game_account_index}"
+                if self._switch_mode
+                else ""
+            ),
         )
-        engine = self._new_engine(account)
+        engine = self._new_engine(
+            account,
+            reuse_adb=reuse_adb,
+            stop_simulator_on_finish=stop_simulator_on_finish,
+        )
         try:
             result = await engine.run_once()
         except Exception as exc:  # noqa: BLE001
@@ -116,6 +158,10 @@ class MultiAccountRunner:
         finally:
             # 把本次创建/复用的 Main 取回，共享给下一个账号（OCR 服务器进程只起一个）
             self._main = getattr(engine.bridge, "_main", None)
+            # 记录模拟器 ADB 地址，游戏内切换模式下传给下一个账号复用
+            adb = getattr(engine.bridge, "adb_address", None)
+            if adb:
+                self._last_adb = adb
         logger.info("===== 账号 [%s] 执行结束: %s =====", account.name, result.status)
         return account.id, result
 
@@ -128,6 +174,9 @@ class MultiAccountRunner:
 
         多次执行语义：每轮按账号顺序执行一遍完整流程，一轮结束后**立即**
         开始下一轮（无间隔；轮间复用共享 BAAS Main，OCR 服务器进程只起一个）。
+        游戏内切换模式：同一轮内账号间不停模拟器（上一账号的执行保持模拟器
+        运行、下一账号复用其 ADB 并在登录界面切换游戏账号）；只有整轮最后一个
+        账号执行完后才关闭模拟器。
         返回 [[(account_id, RunResult), ...], ...]：外层每项为一轮。
         """
         rounds: list[list[tuple[str, RunResult]]] = []
@@ -140,8 +189,18 @@ class MultiAccountRunner:
                     times,
                 )
             round_results: list[tuple[str, RunResult]] = []
-            for account in accounts:
-                round_results.append(await self.run_account(account.id))
+            last_idx = len(accounts) - 1
+            for i, account in enumerate(accounts):
+                keep_running = self._switch_mode and not (
+                    i == last_idx and round_no == times
+                )
+                round_results.append(
+                    await self.run_account(
+                        account.id,
+                        reuse_adb=self._last_adb if self._switch_mode else None,
+                        stop_simulator_on_finish=not keep_running,
+                    )
+                )
             rounds.append(round_results)
             if times > 1 and round_no < times:
                 logger.info("===== 第 %d/%d 轮完成，立即开始下一轮 =====", round_no, times)

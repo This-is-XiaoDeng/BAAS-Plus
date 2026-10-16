@@ -20,6 +20,9 @@ class FakeBridge:
     def __init__(self, ap=120):
         self.ap = ap
         self.started = False
+        self.stop_calls: list[bool] = []  # stop(stop_simulator=...) 的入参记录
+        self.switched: list[int] = []  # 游戏内切换账号调用的序号记录
+        self.adb_used: list[str] = []  # create_baas 收到的 ADB 地址记录
         self.solves: list[str] = []
         self.current_activity = None
         self.normal_tasks = None
@@ -33,10 +36,11 @@ class FakeBridge:
 
     def start_simulator(self):
         self.started = True
-        return "127.0.0.1:16384"
+        self.adb_address = "127.0.0.1:16384"  # 对齐真实 bridge：启动后记录 ADB 地址
+        return self.adb_address
 
     def create_baas(self, adb_address=None):
-        assert adb_address == "127.0.0.1:16384"
+        self.adb_used.append(adb_address)
 
     def launch_game(self):
         self.solves.append("restart")
@@ -154,8 +158,15 @@ class FakeBridge:
     def close_announcement_popups(self, timeout=30.0):
         return True
 
-    def stop(self):
-        pass
+    def stop(self, stop_simulator=True):
+        self.stop_calls.append(stop_simulator)
+
+    def switch_game_account(self, account_index):
+        self.solves.append("switch_account")
+        self.switched.append(account_index)
+        if getattr(self, "switch_ok", True):
+            return True
+        raise RuntimeError("模拟切换失败")
 
 
 class FakeFetcher:
@@ -1219,3 +1230,73 @@ async def test_special_task_not_run_twice_when_enabled(tmp_path):
     # 执行顺序：任务阶段（cafe_reward）在前，扫荡阶段（特别委托）在后
     assert bridge.solves.index("cafe_reward") < bridge.solves.index("clear_special_task_power")
     assert "clear_special_task_power" not in result.executed_tasks
+
+
+# ---- 游戏内切换账号模式（AccountConfig.game_account_index / AccountSwitchConfig） ----
+
+
+def _enable_switch(engine, index=1, **kwargs):
+    """把 engine 切到游戏内切换账号模式（默认 NormalSwitchConfig 覆盖坐标/超时）"""
+    from baas_plus.config import AccountSwitchConfig
+
+    engine.account_switch = AccountSwitchConfig(enabled=True, **kwargs)
+    engine.config.game_account_index = index
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_switch_mode_uses_switch_game_account(tmp_path):
+    """切换模式：启动游戏改走 switch_game_account（带游戏账号序号），不走 launch_game"""
+    bridge = FakeBridge(ap=100)
+    engine = make_engine(bridge, events=[], data_dir=str(tmp_path), baas={"tasks": []})
+    _enable_switch(engine, index=2)
+    result = await engine.run_once()
+    assert bridge.switched == [2]
+    assert "switch_account" in result.executed_tasks
+    assert "restart" not in bridge.solves  # launch_game 未被调用
+    assert bridge.solves[0] == "switch_account"  # 启动路径第一步就是切换账号
+    assert result.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_switch_mode_reuses_adb_without_simulator_start(tmp_path):
+    """切换模式：带 reuse_adb 时跳过 start_simulator，直接复用上一账号的模拟器"""
+    bridge = FakeBridge(ap=100)
+    engine = make_engine(bridge, events=[], data_dir=str(tmp_path), baas={"tasks": []})
+    _enable_switch(engine)
+    engine.reuse_adb = "127.0.0.1:16400"
+    await engine.run_once()
+    assert not bridge.started  # 未重新启动模拟器
+    assert bridge.switched == [1]
+
+
+@pytest.mark.asyncio
+async def test_switch_mode_failure_aborts_run(tmp_path):
+    """切换游戏账号失败：整轮标记 failed 且不再执行任何任务（防止误打到上一个号）"""
+    bridge = FakeBridge(ap=100)
+    engine = make_engine(
+        bridge, events=[], data_dir=str(tmp_path), baas={"tasks": ["cafe_reward"]}
+    )
+    _enable_switch(engine)
+    bridge.switch_ok = False
+    result = await engine.run_once()
+    assert result.status == "failed"
+    assert "切换游戏账号失败" in result.summary
+    assert "cafe_reward" not in bridge.solves  # 一个日常任务都没跑
+
+
+@pytest.mark.asyncio
+async def test_switch_mode_stop_simulator_flag(tmp_path):
+    """执行完成后按 stop_simulator_on_finish 决定是否关闭模拟器（切换模式传机）"""
+    bridge = FakeBridge(ap=100)
+    engine = make_engine(bridge, events=[], data_dir=str(tmp_path), baas={"tasks": []})
+    _enable_switch(engine)
+    engine.stop_simulator_on_finish = False  # 中间账号：不关模拟器
+    await engine.run_once()
+    assert bridge.stop_calls == [False]
+
+    bridge2 = FakeBridge(ap=100)
+    engine2 = make_engine(bridge2, events=[], data_dir=str(tmp_path), baas={"tasks": []})
+    # 默认（非切换 / 最后一个账号）：执行完成后关闭模拟器
+    await engine2.run_once()
+    assert bridge2.stop_calls == [True]
