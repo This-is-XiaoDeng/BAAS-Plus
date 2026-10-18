@@ -453,11 +453,30 @@ class FakeU2ForSwitch:
         self.calls.append(("app_start", pkg))
 
 
-class FakeSwitchBaasThread:
-    """切换账号流程用的假 Baas_thread：点击/OCR 序列/to_main_page 全记录"""
+# 切换账号流程三个 OCR 识别区域（与 baas_bridge 顶层常量一致，720p 基准）
+_ENTER_REGION = (500, 385, 900, 465)  # Yostar 选择框「进入游戏」按钮
+_SWITCH_REGION = (20, 650, 180, 720)  # 登录界面左下角「切换账号」按钮
+_TITLE_REGION = (450, 600, 830, 650)  # 标题页底部横幅
+_REGIONS = {"ENTER": _ENTER_REGION, "SWITCH": _SWITCH_REGION, "TITLE": _TITLE_REGION}
 
-    def __init__(self, ocr_texts, img):
-        self._ocr_texts = list(ocr_texts)  # 每次 OCR 弹出一个文本（用尽后保持最后一个）
+
+class FakeSwitchBaasThread:
+    """切换账号流程用的假 Baas_thread：点击/按区域 OCR/to_main_page 全记录
+
+    ocr_texts 按识别区域给文本序列：{区域 (x1,y1,x2,y2): [文本,...]}。
+    每个区域独立游标，用尽后保持最后一个值。区域 → OCR 调用的映射靠
+    _ocr_crop 裁剪放大后的 origin_image 尺寸反推（enlarge 固定 2，
+    三个识别区域放大后尺寸互不相同）。
+    """
+
+    ENLARGE = 2  # 与 _ocr_crop 默认 enlarge 一致
+
+    def __init__(self, ocr_texts: dict, img):
+        self._texts_by_shape: dict[tuple[int, int], list[str]] = {}
+        for region, texts in ocr_texts.items():
+            x1, y1, x2, y2 = region
+            shape = ((y2 - y1) * self.ENLARGE, (x2 - x1) * self.ENLARGE)
+            self._texts_by_shape[shape] = list(texts)
         self.ocr = self
         self.latest_img_array = img
         self.ratio = 1.0
@@ -467,9 +486,15 @@ class FakeSwitchBaasThread:
         self.refreshes = 0
 
     def ocr_for_single_line(self, **kwargs):
-        if self._ocr_texts:
-            return self._ocr_texts.pop(0)
-        return ""
+        img = kwargs.get("origin_image")
+        if img is None:
+            return ""
+        texts = self._texts_by_shape.get(tuple(img.shape[:2]))
+        if not texts:
+            return ""
+        if len(texts) > 1:
+            return texts.pop(0)
+        return texts[0]  # 用尽后保持最后一个
 
     def update_screenshot_array(self):
         self.refreshes += 1
@@ -491,10 +516,38 @@ def _switch_bridge(bridge, sw_kwargs=None):
     return bridge
 
 
+class _FakeClock:
+    """可控时钟：sleep 推进时间，配合切换流程的重启/超时逻辑测试"""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def time(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def fast_clock(monkeypatch):
+    """把 baas_bridge 的 time 模块替换为可控时钟（sleep 推进 time）"""
+    clock = _FakeClock()
+    monkeypatch.setattr("baas_plus.baas_bridge.time", clock)
+    return clock
+
+
 def test_switch_game_account_full_sequence(bridge, no_sleep):
-    """完整切换流程：重启 BA → 登录界面 → 切换账号 → 确定 → 等选择框 → 下拉框 → 第 2 个账号 → 进入游戏"""
+    """完整切换流程：重启 BA → 登录界面 → 切换账号 → 确定（验证登出）→ 等选择框 → 下拉框 → 第 2 个账号 → 进入游戏"""
     baas = FakeSwitchBaasThread(
-        ocr_texts=["切换账号", "进入游戏", ""],
+        # 第 1 轮：选择框未弹出（ENTER 落空）→ 识别到「切换账号」→ 登出；
+        # 登出验证：横幅出现（TITLE）+ 按钮落空（SWITCH 第 2 次读取）；
+        # 第 2 轮：ENTER 命中「进入游戏」
+        ocr_texts={
+            _ENTER_REGION: ["", "进入游戏"],
+            _SWITCH_REGION: ["切换账号", ""],
+            _TITLE_REGION: ["点击任意区域进入游戏"],
+        },
         img=_blank_screen(),
     )
     bridge = _switch_bridge(bridge)
@@ -513,36 +566,135 @@ def test_switch_game_account_full_sequence(bridge, no_sleep):
 
 def test_switch_game_account_skips_logout_when_dialog_direct(bridge, no_sleep):
     """重启后 Yostar 选择框直接弹出（OCR 到「进入游戏」）：跳过切换账号/确定，直接点选"""
-    # OCR 序列：第 1 次查「切换账号」区域得到空文本，第 2 次查「进入游戏」区域命中
-    baas = FakeSwitchBaasThread(ocr_texts=["", "进入游戏", ""], img=_blank_screen())
+    # 第 1 轮三个区域都识别不到，第 2 轮 ENTER 命中「进入游戏」
+    baas = FakeSwitchBaasThread(
+        ocr_texts={_ENTER_REGION: ["", "进入游戏"], _SWITCH_REGION: [""], _TITLE_REGION: [""]},
+        img=_blank_screen(),
+    )
     bridge = _switch_bridge(bridge)
     bridge.baas_thread = baas
     bridge.switch_game_account(1)
-    # 没有「切换账号」「确定」步骤；第 1 个账号 y=420
+    # 没有「切换账号」「确定」「点空白」步骤；第 1 个账号 y=420
     assert baas.clicks == [(855, 315), (600, 420), (642, 430)]
 
 
 def test_switch_game_account_clicks_blank_until_dialog(bridge, no_sleep):
-    """登出过渡页：重复点空白处唤出选择框，OCR 到后立即停手"""
+    """登出过渡页：点空白处唤出选择框，OCR 到后立即停手（未弹出不重复点）"""
     baas = FakeSwitchBaasThread(
-        ocr_texts=["切换账号", "", "", "进入游戏", ""],
+        # 第 1 轮：登录界面 → 登出（验证：横幅出现 + 按钮落空）；
+        # 第 2 轮：ENTER 落空、TITLE 命中横幅 → 点空白一次；
+        # 第 3 轮：ENTER 命中「进入游戏」
+        ocr_texts={
+            _ENTER_REGION: ["", "", "进入游戏"],
+            _SWITCH_REGION: ["切换账号", ""],
+            _TITLE_REGION: ["点击任意区域进入游戏"],
+        },
         img=_blank_screen(),
     )
     bridge = _switch_bridge(bridge)
     bridge.baas_thread = baas
     bridge.switch_game_account(3)
-    # 确认后第 1/2 轮未弹出 → 点空白(640,360)两次；第 3 轮 OCR 到后不再点击
+    # 确认登出后第 2 轮点空白(640,360)一次；第 3 轮 OCR 到后不再点击
     assert baas.clicks == [
         (60, 688), (736, 415),
-        (640, 360), (640, 360),
+        (640, 360),
         (855, 315), (600, 620),  # 第 3 个账号 = first.y + 2×行高
         (642, 430),
     ]
 
 
+def test_switch_game_account_never_blank_clicks_before_logout(bridge, no_sleep):
+    """安全顺序回归：登出完成前绝不点空白（标题页点空白 = 自动登录旧账号）
+
+    第 1 轮识别到标题横幅但「切换账号」按钮 OCR 抖动漏识别 → 不点任何东西；
+    第 2 轮重新识别到「切换账号」才走登出流程。
+    """
+    baas = FakeSwitchBaasThread(
+        ocr_texts={
+            _ENTER_REGION: ["", "", "进入游戏"],
+            _SWITCH_REGION: ["", "切换账号", ""],
+            _TITLE_REGION: ["点击任意区域进入游戏"],
+        },
+        img=_blank_screen(),
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    bridge.switch_game_account(1)
+    # 全程没有 (640,360) 的空白点击
+    assert baas.clicks == [(60, 688), (736, 415), (855, 315), (600, 420), (642, 430)]
+
+
+def test_switch_game_account_retries_logout_when_confirm_missed(bridge, fast_clock):
+    """点「确定」后未检测到登出（点空）：自动重试「切换账号 → 确定」序列"""
+    baas = FakeSwitchBaasThread(
+        # 第 1 次登出验证：10 次轮询 TITLE 全落空 → 失败重试；
+        # 第 2 次验证：横幅出现 + 按钮落空；随后 ENTER 命中「进入游戏」
+        ocr_texts={
+            _ENTER_REGION: ["", "进入游戏"],
+            _SWITCH_REGION: ["切换账号", ""],
+            _TITLE_REGION: [""] * 10 + ["点击任意区域进入游戏"],
+        },
+        img=_blank_screen(),
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    bridge.switch_game_account(1)
+    # 「切换账号 → 确定」被执行两次
+    assert baas.clicks == [
+        (60, 688), (736, 415),
+        (60, 688), (736, 415),
+        (855, 315), (600, 420), (642, 430),
+    ]
+
+
+def test_switch_game_account_restarts_on_auto_login(bridge, fast_clock, monkeypatch):
+    """自动登录复位：重启后识别不到任何特征（疑似直接进了主界面）→ 再次杀进程重启后恢复"""
+    monkeypatch.setattr("baas_plus.baas_bridge._SWITCH_BLIND_RESTART_AFTER", 4.0)
+    # 重启前 3 轮全部落空（盲等 4s 触发重启），重启后第 1 轮识别到选择框
+    baas = FakeSwitchBaasThread(
+        ocr_texts={
+            _ENTER_REGION: ["", "", "", "进入游戏"],
+            _SWITCH_REGION: ["", "", ""],
+            _TITLE_REGION: ["", "", ""],
+        },
+        img=_blank_screen(),
+    )
+    bridge = _switch_bridge(bridge, sw_kwargs={"app_start_timeout": 600.0})
+    bridge.baas_thread = baas
+    bridge.switch_game_account(1)
+    # 初始重启 + 1 次自动登录复位重启
+    assert baas.u2.calls == [
+        ("app_stop", "com.custom.bluearchive"),
+        ("app_start", "com.custom.bluearchive"),
+        ("app_stop", "com.custom.bluearchive"),
+        ("app_start", "com.custom.bluearchive"),
+    ]
+    # 复位成功后正常选号；全程没有空白点击（未登出状态）
+    assert baas.clicks == [(855, 315), (600, 420), (642, 430)]
+
+
+def test_switch_game_account_restart_cap(bridge, fast_clock, monkeypatch):
+    """自动登录复位有次数上限：连续盲等只重启 _SWITCH_MAX_RESTARTS 次，最终抛超时错误"""
+    monkeypatch.setattr("baas_plus.baas_bridge._SWITCH_BLIND_RESTART_AFTER", 4.0)
+    baas = FakeSwitchBaasThread(
+        ocr_texts={_ENTER_REGION: [""], _SWITCH_REGION: [""], _TITLE_REGION: [""]},
+        img=_blank_screen(),
+    )
+    bridge = _switch_bridge(bridge, sw_kwargs={"app_start_timeout": 600.0})
+    bridge.baas_thread = baas
+    with pytest.raises(RuntimeError, match="等待登录界面超时"):
+        bridge.switch_game_account(1)
+    # 初始重启 + 2 次复位重启 = 3 组 stop/start；期间没有任何点击
+    assert baas.u2.calls == [("app_stop", "com.custom.bluearchive"), ("app_start", "com.custom.bluearchive")] * 3
+    assert baas.clicks == []
+
+
 def test_switch_game_account_rejects_invalid_index(bridge, no_sleep):
     """序号 < 1：不执行任何点击/OFF 操作，直接抛错"""
-    baas = FakeSwitchBaasThread(ocr_texts=["切换账号"], img=_blank_screen())
+    baas = FakeSwitchBaasThread(
+        ocr_texts={_ENTER_REGION: ["切换账号"], _SWITCH_REGION: [""], _TITLE_REGION: [""]},
+        img=_blank_screen(),
+    )
     bridge = _switch_bridge(bridge)
     bridge.baas_thread = baas
     with pytest.raises(RuntimeError, match="序号不合法"):
@@ -554,17 +706,36 @@ def test_switch_game_account_rejects_invalid_index(bridge, no_sleep):
 @pytest.mark.parametrize(
     "texts,match_text",
     [
-        (["不知道"], "等待登录界面超时"),
-        (["切换账号"], "等待 Yostar 账号选择框超时"),
+        ({"ENTER": ["不知道"], "SWITCH": [""], "TITLE": [""]}, "等待登录界面超时"),
+        # 已完成登出但选择框一直没出现：报 Yostar 选择框超时（指引不同）
+        (
+            {"ENTER": ["", ""], "SWITCH": ["切换账号", ""], "TITLE": ["点击任意区域进入游戏"]},
+            "等待 Yostar 账号选择框超时",
+        ),
     ],
 )
 def test_switch_game_account_timeout_raises(bridge, no_sleep, texts, match_text):
     """OCR 一直识别不到目标按钮：超时抛 RuntimeError（带排查指引）"""
+    texts = {_REGIONS[v]: t for v, t in texts.items()}
     baas = FakeSwitchBaasThread(ocr_texts=texts, img=_blank_screen())
     bridge = _switch_bridge(bridge, sw_kwargs={"app_start_timeout": 0.2, "dialog_timeout": 0.2})
     bridge.baas_thread = baas
     with pytest.raises(RuntimeError, match=match_text):
         bridge.switch_game_account(1)
+
+
+def test_switch_game_account_logout_verify_never_succeeds(bridge, fast_clock):
+    """反复点「切换账号 → 确定」始终检测不到登出：抛切换失败错误（不盲点空白）"""
+    baas = FakeSwitchBaasThread(
+        ocr_texts={_ENTER_REGION: [""], _SWITCH_REGION: ["切换账号", ""], _TITLE_REGION: [""]},
+        img=_blank_screen(),
+    )
+    bridge = _switch_bridge(bridge, sw_kwargs={"app_start_timeout": 600.0})
+    bridge.baas_thread = baas
+    with pytest.raises(RuntimeError, match="切换账号失败"):
+        bridge.switch_game_account(1)
+    # 只有点击「切换账号/确定」的重试，没有空白点击（防自动登录）
+    assert set(baas.clicks) == {(60, 688), (736, 415)}
 
 
 def test_switch_game_account_requires_baas_thread(bridge):
