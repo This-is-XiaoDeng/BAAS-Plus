@@ -743,6 +743,115 @@ def test_switch_game_account_requires_baas_thread(bridge):
         bridge.switch_game_account(1)
 
 
+def test_switch_game_account_rejects_invalid_index_even_with_blank_tail_spaces(bridge, no_sleep):
+    """尾号只有空白字符：视为未设置，序号仍须 >= 1"""
+    baas = FakeSwitchBaasThread(
+        ocr_texts={_ENTER_REGION: [""], _SWITCH_REGION: [""], _TITLE_REGION: [""]},
+        img=_blank_screen(),
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    with pytest.raises(RuntimeError, match="序号不合法"):
+        bridge.switch_game_account(0, "   ")
+    assert baas.clicks == []
+
+
+# ---- 切换账号：手机尾号 OCR 匹配（列表顺序不固定，不按序号点选） ----
+
+
+def _num_region(first_pos=(600, 420)):
+    """第 n 个账号条目的手机号 OCR 区域（由 _ACCOUNT_NUMBER_OCR_OFFSET 推算）。
+
+    注意所有条目区域裁剪放大后**同形**（同为 30px 高），FakeSwitchBaasThread
+    只能按 shape 出队——而代码按条目序从上往下逐条扫描，序列顺序即条目顺序。
+    """
+    from baas_plus.baas_bridge import _ACCOUNT_NUMBER_OCR_OFFSET
+
+    x, y = first_pos
+    dx1, dy1, dx2, dy2 = _ACCOUNT_NUMBER_OCR_OFFSET
+    return (x + dx1, y + dy1, x + dx2, y + dy2)
+
+
+def _yostar_card_screen():
+    """模拟 Yostar 选择框截图：卡片区域纯白，其余为黑（背景/版权文字）"""
+    import numpy as np
+
+    img = np.zeros((720, 1280, 3), dtype=np.uint8)
+    img[155:566, 262:1110] = 255  # 白色卡片（实测 4.png/5.png 卡片范围）
+    return img
+
+
+def test_switch_game_account_selects_by_phone_tail(bridge, no_sleep):
+    """设置手机尾号：OCR 逐条匹配号码尾号点选，不依赖列表顺序"""
+    baas = FakeSwitchBaasThread(
+        ocr_texts={
+            _ENTER_REGION: ["进入游戏"],
+            # 条目 1 是 3522、条目 2 是 9524（用尽后保持最后一个值）
+            _num_region(): ["136****3522", "135****9524", "135****9524"],
+        },
+        img=_yostar_card_screen(),
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    bridge.switch_game_account(1, "9524")
+    # 尾号 9524 命中第 2 个条目 (600,520)；不走序号定位（序号 1 = 第 1 项 y=420）
+    assert baas.clicks == [(855, 315), (600, 520), (642, 430)]
+
+
+def test_switch_game_account_tail_not_found_raises(bridge, no_sleep):
+    """尾号未匹配到任何条目：重扫一轮后抛错，且不点击条目/「进入游戏」"""
+    baas = FakeSwitchBaasThread(
+        ocr_texts={
+            _ENTER_REGION: ["进入游戏"],
+            _num_region(): ["136****3522", "135****9524", "135****9524"],
+        },
+        img=_yostar_card_screen(),
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    with pytest.raises(RuntimeError, match="手机尾号为 1111 的条目"):
+        bridge.switch_game_account(1, "1111")
+    # 只有展开下拉列表的点击；选号失败绝不点「进入游戏」（防止进错号）
+    assert baas.clicks == [(855, 315)]
+
+
+def test_switch_game_account_tail_retries_after_ocr_jitter(bridge, no_sleep):
+    """第一轮 OCR 漏读（返回空）：整轮扫完自动重扫第二轮并命中"""
+    baas = FakeSwitchBaasThread(
+        ocr_texts={
+            _ENTER_REGION: ["进入游戏"],
+            # 第 1 轮：条目 1 漏读、条目 2 读到 3522（不匹配）；第 2 轮：条目 1 读到 9524
+            _num_region(): ["", "136****3522", "135****9524"],
+        },
+        img=_yostar_card_screen(),
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    bridge.switch_game_account(1, "9524")
+    assert baas.clicks == [(855, 315), (600, 420), (642, 430)]
+
+
+def test_switch_game_account_stops_scan_outside_card(bridge, no_sleep):
+    """扫描超出 Yostar 白色卡片即停止：不会把卡片下方背景/版权文字当号码
+
+    卡片只容纳 2 个条目（第 3 个条目点击 y=620 在卡片外）——若继续扫描，
+    背景区域 OCR 会继续消费 fake 序列并可能误命中/点错位置。
+    """
+    baas = FakeSwitchBaasThread(
+        ocr_texts={
+            _ENTER_REGION: ["进入游戏"],
+            # 只有 2 个真实条目；若扫到第 3 个条目会消费到背景序列（不匹配）
+            _num_region(): ["136****3522", "135****9524", ""],
+        },
+        img=_yostar_card_screen(),
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    bridge.switch_game_account(2, "9524")
+    assert baas.clicks == [(855, 315), (600, 520), (642, 430)]
+
+
+
 def test_stop_can_keep_simulator_running(bridge, monkeypatch):
     """stop(stop_simulator=False)：停止 BAAS 线程但保留模拟器（切换模式传机用）"""
     from baas_plus.baas_bridge import BaasBridge

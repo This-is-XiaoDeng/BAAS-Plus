@@ -363,6 +363,8 @@ def test_account_switch_defaults_off():
     assert config.account_switch.account_row_height == 100
     # 盲等窗口（疑似自动登录判定）默认 120s，旧配置缺字段时向后兼容
     assert config.account_switch.blind_restart_after == 120.0
+    # 登出后等待 Yostar 选择框默认 300s（五分钟），旧配置缺字段时向后兼容
+    assert config.account_switch.dialog_timeout == 300.0
     # 账号默认未设置游戏账号序号（0），不开启切换模式时无影响
     assert config.accounts[0].game_account_index == 0
 
@@ -414,6 +416,48 @@ def test_account_switch_rejects_duplicate_index():
                 {"name": "小号", "game_account_index": 1},
             ],
         )
+
+
+def test_account_switch_accepts_phone_tail_without_index():
+    """切换模式开启时：设置手机尾号即可（列表顺序不固定，尾号匹配优先于序号）"""
+    config = AppConfig(
+        account_switch={"enabled": True},
+        accounts=[
+            {"name": "主号", "game_account_phone_tail": "3522", "baas": {"tasks": []}},
+            {"name": "小号", "game_account_phone_tail": "9524", "baas": {"tasks": []}},
+        ],
+    )
+    assert [a.game_account_phone_tail for a in config.accounts] == ["3522", "9524"]
+
+
+def test_account_switch_rejects_missing_tail_and_index():
+    """切换模式开启时：既没有尾号也没有序号的账号拒绝加载"""
+    with pytest.raises(ValueError, match="手机尾号"):
+        AppConfig(
+            account_switch={"enabled": True},
+            accounts=[
+                {"name": "主号", "game_account_index": 1},
+                {"name": "小号"},  # 尾号与序号都没设置
+            ],
+        )
+
+
+def test_account_switch_rejects_duplicate_tail():
+    """切换模式开启时：手机尾号必须互不相同（否则 OCR 会匹配到同一条目）"""
+    with pytest.raises(ValueError, match="手机尾号必须互不相同"):
+        AppConfig(
+            account_switch={"enabled": True},
+            accounts=[
+                {"name": "主号", "game_account_phone_tail": "3522"},
+                {"name": "小号", "game_account_phone_tail": "3522"},
+            ],
+        )
+
+
+def test_account_rejects_non_digit_tail():
+    """手机尾号必须是纯数字（OCR 匹配按数字串比对）"""
+    with pytest.raises(ValueError, match="纯数字"):
+        AppConfig(accounts=[{"name": "主号", "game_account_phone_tail": "3a22"}])
 
 
 def test_index_zero_allowed_when_switch_disabled():

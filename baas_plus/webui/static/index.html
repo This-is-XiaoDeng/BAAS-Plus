@@ -172,7 +172,8 @@
             <option value="bluestacks_nxt_cn">蓝叠 5 中国版</option>
           </select></div>
         <div><label>多开实例（0 起）</label><input id="sim_instance" type="number" value="0"></div>
-        <div><label title="游戏内切换账号模式下，本账号对应 Yostar 登录界面账号下拉列表中的第几个游戏账号（从 1 开始，0 = 未设置）">游戏账号序号</label><input id="acc_game_index" type="number" min="0" value="0"></div>
+        <div><label title="游戏内切换账号模式下，本账号 Yostar 登录界面下拉列表中显示的手机号尾号（如显示 136****3522，填 3522）。列表按上次登录时间排序、顺序不固定，切换账号时按 OCR 尾号匹配点选">手机尾号</label><input id="acc_game_tail" placeholder="如 3522"></div>
+        <div><label title="仅未填「手机尾号」时使用：Yostar 账号下拉列表中从上往下数的位置（从 1 开始，0 = 未设置）。列表顺序不固定，推荐改用手机尾号">游戏账号序号（备用）</label><input id="acc_game_index" type="number" min="0" value="0"></div>
       </div>
       <div class="chk"><label><input type="checkbox" id="sim_auto_restart" checked> 读取体力失败时自动重启模拟器恢复（游戏失联自愈）</label></div>
       <label>BAAS 源码目录（repo_dir，留空用已安装包）</label><input id="baas_repo_dir" placeholder="C:\BAAS">
@@ -194,7 +195,7 @@
     <div class="card">
       <h2>🔁 游戏内切换账号（全局设置）</h2>
       <div class="chk"><label><input type="checkbox" id="switch_enabled"> 启用：多账号共用一个模拟器实例，执行前在登录界面自动切换游戏账号（不再模拟器多开）</label></div>
-      <p class="hint">开启后所有账号必须使用<b>同一个模拟器实例</b>（多开编号一致），每个账号在上方「游戏账号序号」里填自己在 Yostar 登录界面账号下拉列表中（从上往下）的序号（从 1 开始）：每个账号执行开始时 BAAS-Plus 会重启游戏并<b>自动识别界面状态</b>（登录界面 → 点「切换账号」→「确定」登出；Yostar 选择框直接弹出 → 跳过登出；疑似自动登录进了主界面 → 再重启复位），然后在选择框里点选该序号的账号 →「进入游戏」，避免多开占内存/重复登录。各账号仍保留独立的任务勾选、扫荡策略、BAAS 配置目录与收件人覆盖。</p>
+      <p class="hint">开启后所有账号必须使用<b>同一个模拟器实例</b>（多开编号一致）。Yostar 账号下拉列表按<b>上次登录时间</b>排序、顺序不固定，所以每个账号请在上方「配置」页填自己的<b>手机尾号</b>（列表显示 136****3522 就填 3522）：每个账号执行开始时 BAAS-Plus 会重启游戏并<b>自动识别界面状态</b>（登录界面 → 点「切换账号」→「确定」登出；Yostar 选择框直接弹出 → 跳过登出；疑似自动登录进了主界面 → 再重启复位），然后展开列表、<b>OCR 各条目号码按尾号匹配</b>点选目标账号 →「进入游戏」，避免多开占内存/重复登录。仅在未填尾号时才按「游戏账号序号」位置点选（不推荐）。各账号仍保留独立的任务勾选、扫荡策略、BAAS 配置目录与收件人覆盖。</p>
       <details>
         <summary>高级：切换流程坐标与等待（1280x720 基准，默认值来自实机标注）</summary>
         <div class="row">
@@ -211,7 +212,7 @@
         </div>
         <div class="row">
           <div><label>账号条目行高（px）</label><input id="sw_account_row_height" type="number" value="100"></div>
-          <div><label>等「进入游戏」出现超时（秒）</label><input id="sw_dialog_timeout" type="number" value="60"></div>
+          <div><label>等「进入游戏」出现超时（秒）</label><input id="sw_dialog_timeout" type="number" value="300"></div>
         </div>
         <div class="row">
           <div><label title="重启游戏后持续这么久识别不到任何界面特征（登录界面/选择框/标题横幅），判定疑似自动登录进了主界面 → 再重启复位（最多 2 次）。冷启动加载慢的机器调大，避免把还在加载的游戏误杀重启">自动登录判定窗口（秒）</label><input id="sw_blind_restart_after" type="number" value="120"></div>
@@ -471,6 +472,7 @@ function loadForm() {
   $('acc_name').value = a.name;
   $('sim_type').value = a.simulator.type;
   $('sim_instance').value = a.simulator.instance;
+  $('acc_game_tail').value = a.game_account_phone_tail || '';
   $('acc_game_index').value = a.game_account_index || 0;
   $('sim_auto_restart').checked = a.simulator.auto_restart_on_failure !== false;  // 兼容旧配置（默认开启）
   $('baas_repo_dir').value = a.baas.repo_dir;
@@ -498,7 +500,7 @@ function loadForm() {
   $('sw_blank_click').value = _pair(sw.blank_click, '640,360');
   $('sw_first_account_pos').value = _pair(sw.first_account_pos, '600,420');
   $('sw_account_row_height').value = sw.account_row_height != null ? sw.account_row_height : 100;
-  $('sw_dialog_timeout').value = sw.dialog_timeout != null ? sw.dialog_timeout : 60;
+  $('sw_dialog_timeout').value = sw.dialog_timeout != null ? sw.dialog_timeout : 300;
   $('sw_blind_restart_after').value = sw.blind_restart_after != null ? sw.blind_restart_after : 120;
   // 全局活动设置（「活动」页，不随账号变化；兼容旧配置里 activity 缺失时的默认值）
   const g = cfg.activity || {};
@@ -568,6 +570,7 @@ function collectConfig() {
     ...accRest,
     name: $('acc_name').value.trim() || acc().name,
     enabled: $('acc_enabled').checked,
+    game_account_phone_tail: ($('acc_game_tail').value || '').trim(),
     game_account_index: Math.max(0, parseInt($('acc_game_index').value) || 0),
     simulator: { type: $('sim_type').value, instance: parseInt($('sim_instance').value) || 0, auto_restart_on_failure: $('sim_auto_restart').checked },
     baas: {
@@ -605,7 +608,7 @@ function collectConfig() {
       blank_click: _parsePair($('sw_blank_click').value, oldSw.blank_click || [640, 360]),
       first_account_pos: _parsePair($('sw_first_account_pos').value, oldSw.first_account_pos || [600, 420]),
       account_row_height: parseInt($('sw_account_row_height').value) || (oldSw.account_row_height ?? 100),
-      dialog_timeout: parseFloat($('sw_dialog_timeout').value) || (oldSw.dialog_timeout ?? 60),
+      dialog_timeout: parseFloat($('sw_dialog_timeout').value) || (oldSw.dialog_timeout ?? 300),
       blind_restart_after: parseFloat($('sw_blind_restart_after').value) || (oldSw.blind_restart_after ?? 120),
       // 前端没有对应控件的老字段：原样带回去（否则保存会把用户改过的值重置成默认）
       app_start_timeout: oldSw.app_start_timeout != null ? oldSw.app_start_timeout : 120,

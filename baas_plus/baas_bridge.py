@@ -105,6 +105,13 @@ _SWITCH_MAX_RESTARTS = 2
 _SWITCH_OP_TIMEOUT = 30.0
 # 每次点击「确定」后等待登出生效（过渡页横幅出现且「切换账号」按钮消失）的最长时间（秒）
 _LOGOUT_VERIFY_TIMEOUT = 10.0
+# 尾号匹配时最多扫描的账号条目数（720p 下选择框可见条目有限，超出部分 OCR
+# 区域会落在卡片外；卡片内边界由像素采样判断，见 _row_in_yostar_card）
+_SWITCH_ROW_SCAN_LIMIT = 6
+# 账号条目手机号文字相对条目点击点（first_account_pos 第 n 项）的区域偏移
+# （720p 基准，实测 1280x720 实机截图：号码文字如「136****3522」位于点击点
+# 上方约 12~30px、x 479~624，此处各留边距容 OCR 抖动/游戏版本微调）
+_ACCOUNT_NUMBER_OCR_OFFSET = (-135, -36, 45, -4)  # (x1, y1, x2, y2) 相对 (first.x, click_y)
 
 
 def import_baas(repo_dir: str = "") -> Any:
@@ -1421,8 +1428,8 @@ class BaasBridge:
             return False
         return keyword in text.replace(" ", "").replace("\n", "")
 
-    def switch_game_account(self, account_index: int) -> None:
-        """游戏内切换到第 account_index 个 Yostar 游戏账号（替代模拟器多开）
+    def switch_game_account(self, account_index: int, phone_tail: str = "") -> None:
+        """游戏内切换到指定 Yostar 游戏账号（替代模拟器多开）
 
         多账号共用一个模拟器实例时（AppConfig.account_switch.enabled），
         每个账号执行开始时走该流程。完整步骤（坐标 1280x720 基准，
@@ -1435,19 +1442,23 @@ class BaasBridge:
            三种开局状态）：登录界面（「切换账号」按钮）→ 登出 → 过渡页点空白
            唤出选择框；选择框直接弹出（「进入游戏」按钮）→ 跳过登出；
            自动登录进了主界面 → 再次杀进程重启复位；
-        3. 点击下拉箭头展开账号列表 → 点击第 account_index 个账号条目
-           （第 n 个 = first_account_pos.y + (n-1) × account_row_height）；
+        3. 点击下拉箭头展开账号列表 → 点选目标账号条目：账号列表按上次登录
+           时间排序、**顺序不固定**，设置了 phone_tail（手机尾号，如 "3522"）
+           时逐条 OCR 条目号码匹配点选（_find_account_row_by_tail），不依赖
+           位置；未设置尾号时退回按序号点击（第 n 个 = first_account_pos.y
+           + (n-1) × account_row_height）；
         4. 点击「进入游戏」→ BAAS to_main_page + 关公告弹窗回主界面。
 
-        account_index 从 1 开始（须与用户在 Yostar 选择框列表里看到的顺序
-        一致）；任何一步失败抛 RuntimeError（引擎将整个执行标记 failed，
-        绝不在身份不明的账号上继续执行日常任务——竞技场券/体力会被误消耗）。
+        account_index 从 1 开始（仅未设置 phone_tail 时用于定位，仍须 >= 1）；
+        任何一步失败抛 RuntimeError（引擎将整个执行标记 failed，绝不在身份
+        不明的账号上继续执行日常任务——竞技场券/体力会被误消耗）。
         """
         if self.baas_thread is None:
             raise RuntimeError("Baas_thread 未初始化，请先调用 create_baas()")
-        if not isinstance(account_index, int) or account_index < 1:
+        if not phone_tail.strip() and (not isinstance(account_index, int) or account_index < 1):
             raise RuntimeError(
-                f"游戏账号序号不合法: {account_index!r}（应为 Yostar 下拉列表中的序号，从 1 开始）"
+                f"游戏账号序号不合法: {account_index!r}（未设置手机尾号时须为 Yostar"
+                " 下拉列表中的序号，从 1 开始）"
             )
         sw = self.account_switch
         baas = self.baas_thread
@@ -1465,9 +1476,10 @@ class BaasBridge:
         # 2. 自动识别界面状态并推进到 Yostar 账号选择框可见
         #    （选择框可能直接弹出；也可能自动登录直接进了主界面，需再重启复位）
         self._reach_yostar_dialog(sw)
-        # 3./4. 展开账号列表 → 选账号 → 进入游戏 → 回主界面
-        self._select_account_and_enter(sw, account_index)
-        logger.info("游戏账号切换完成（第 %d 个），已回主界面", account_index)
+        # 3./4. 展开账号列表 → 选账号（尾号 OCR 匹配或按序号）→ 进入游戏 → 回主界面
+        self._select_account_and_enter(sw, account_index, phone_tail)
+        tail_hint = f"尾号 {phone_tail.strip()}" if phone_tail.strip() else f"序号 {account_index}"
+        logger.info("游戏账号切换完成（%s），已回主界面", tail_hint)
 
     def _restart_game(self) -> None:
         """强杀并重启 BA 游戏进程（切换流程的确定复位方式，也用于自动登录复位）"""
@@ -1617,17 +1629,28 @@ class BaasBridge:
             # 2.4 三种特征都识别不到：可能在加载（刚重启），也可能已自动登录进游戏
             time.sleep(2)
 
-    def _select_account_and_enter(self, sw: AccountSwitchConfig, account_index: int) -> None:
-        """展开账号下拉列表 → 点击第 account_index 个账号 → 「进入游戏」→ 回主界面"""
-        x, y = sw.first_account_pos
-        target = (x, y + (account_index - 1) * sw.account_row_height)
+    def _select_account_and_enter(
+        self, sw: AccountSwitchConfig, account_index: int, phone_tail: str = ""
+    ) -> None:
+        """展开账号下拉列表 → 点选目标账号 → 「进入游戏」→ 回主界面
+
+        设置了 phone_tail（手机尾号）时按 OCR 匹配条目点选（列表顺序不固定，
+        序号不可靠）；否则退回按 account_index 定位（第 n 个 = first_account_pos.y
+        + (n-1) × account_row_height）。
+        """
+        tail = (phone_tail or "").strip()
         logger.info("展开账号下拉列表 %s", sw.dropdown_button)
         self.baas_thread.click(*sw.dropdown_button)
         time.sleep(1.2)
-        logger.info(
-            "点击第 %d 个游戏账号 %s（列表第 1 项在 %s，行高 %d）",
-            account_index, target, sw.first_account_pos, sw.account_row_height,
-        )
+        if tail:
+            target = self._find_account_row_by_tail(sw, tail)
+        else:
+            x, y = sw.first_account_pos
+            target = (x, y + (account_index - 1) * sw.account_row_height)
+            logger.info(
+                "点击第 %d 个游戏账号 %s（列表第 1 项在 %s，行高 %d）",
+                account_index, target, sw.first_account_pos, sw.account_row_height,
+            )
         self.baas_thread.click(*target)
         time.sleep(1.2)
         logger.info("点击「进入游戏」%s", sw.enter_game_button)
@@ -1637,6 +1660,69 @@ class BaasBridge:
         self.baas_thread.to_main_page()
         self.close_announcement_popups(timeout=30)
         logger.info("已进入游戏并回到主界面（游戏内切换账号流程完成）")
+
+    def _find_account_row_by_tail(
+        self, sw: AccountSwitchConfig, tail: str
+    ) -> tuple[int, int]:
+        """OCR 账号条目手机号，按尾号匹配目标账号条目（列表顺序不固定）
+
+        展开后的列表第 n 个条目的点击点为 first_account_pos.y + (n-1)×
+        account_row_height；号码文字（如「136****3522」）在点击点上方约
+        12~30px（_ACCOUNT_NUMBER_OCR_OFFSET，720p 基准实测）。逐条 OCR 提取
+        数字串，包含目标尾号即命中；整轮扫完未命中再重扫一轮（容 OCR 抖动），
+        仍找不到抛 RuntimeError（带 OCR 到的原文便于排查）。
+        """
+        x, first_y = sw.first_account_pos
+        dx1, dy1, dx2, dy2 = _ACCOUNT_NUMBER_OCR_OFFSET
+        seen: list[str] = []
+        for pass_no in (1, 2):
+            for n in range(1, _SWITCH_ROW_SCAN_LIMIT + 1):
+                click_y = first_y + (n - 1) * sw.account_row_height
+                if not self._row_in_yostar_card(sw, click_y):
+                    # 已扫出选择框白色卡片（后面是背景/版权文字），停止本轮
+                    logger.info("第 %d 个条目已超出 Yostar 选择框卡片，停止扫描", n)
+                    break
+                region = (x + dx1, click_y + dy1, x + dx2, click_y + dy2)
+                text = self._ocr_region(region)
+                digits = "".join(ch for ch in text if ch.isdigit())
+                if tail in digits:
+                    logger.info(
+                        "第 %d 个账号条目号码 OCR %r（数字 %s）尾号匹配 %s，点击 %s",
+                        n, text, digits, tail, (x, click_y),
+                    )
+                    return (x, click_y)
+                if text:
+                    seen.append(text)
+            logger.info(
+                "第 %d 轮扫描未找到尾号 %s 的账号条目（识别到 %s），重扫一轮",
+                pass_no, tail, seen,
+            )
+        raise RuntimeError(
+            f"未在 Yostar 账号列表中找到手机尾号为 {tail} 的条目（OCR 识别到: {seen}）。"
+            "请核对账号配置的手机尾号（WebUI「配置」页「手机尾号」）与下拉列表中"
+            "显示的号码是否一致；若列表超出可见范围需要滚动，请先在游戏内登出多余"
+            "账号或改用手动登录"
+        )
+
+    def _row_in_yostar_card(self, sw: AccountSwitchConfig, click_y: int) -> bool:
+        """判断账号条目行是否仍在 Yostar 选择框的白色卡片内
+
+        扫描条目时防止把卡片下方的背景/版权文字数字误当号码：采样条目行右端
+        无文字处（first.x + 100）的像素，卡片为纯白（RGB 均 >= 230），背景
+        云层/横幅偏灰或偏暗。拿不到截图时放行（不拦截扫描）。
+        """
+        img = getattr(self.baas_thread, "latest_img_array", None)
+        if img is None:
+            return True
+        ratio = getattr(self.baas_thread, "ratio", 1.0) or 1.0
+        x, _first_y = sw.first_account_pos
+        sx = int((x + 100) * ratio)
+        sy = int(click_y * ratio)
+        h, w = img.shape[:2]
+        if sy < 0 or sy >= h or sx < 0 or sx >= w:
+            return False
+        b, g, r = (int(v) for v in img[sy, sx][:3])
+        return min(b, g, r) >= 230
 
     def click_banner_enter(self) -> None:
         """立即点击轮播图当前页的「进入活动」按钮（activity_enter1 @ (1196,195)）

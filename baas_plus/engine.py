@@ -668,7 +668,10 @@ class Engine:
             #    会误消耗竞技场券/体力，宁可整轮失败
             if self.account_switch.enabled:
                 try:
-                    self.bridge.switch_game_account(self.config.game_account_index)
+                    self.bridge.switch_game_account(
+                        self.config.game_account_index,
+                        self.config.game_account_phone_tail,
+                    )
                     self.result.executed_tasks.append("switch_account")
                 except Exception as exc:  # noqa: BLE001
                     logger.error("切换游戏账号失败: %s", exc)

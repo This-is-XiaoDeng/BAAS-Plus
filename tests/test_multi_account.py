@@ -102,7 +102,7 @@ class FakeBridge:
     def stop(self, stop_simulator=True):
         self.stop_calls.append(stop_simulator)
 
-    def switch_game_account(self, account_index):
+    def switch_game_account(self, account_index, phone_tail=""):
         self.solves.append("switch_account")
         self.switched.append(account_index)
         return True

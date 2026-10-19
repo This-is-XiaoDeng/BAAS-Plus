@@ -22,6 +22,7 @@ class FakeBridge:
         self.started = False
         self.stop_calls: list[bool] = []  # stop(stop_simulator=...) 的入参记录
         self.switched: list[int] = []  # 游戏内切换账号调用的序号记录
+        self.tails: list[str] = []  # 游戏内切换账号调用的手机尾号记录
         self.adb_used: list[str] = []  # create_baas 收到的 ADB 地址记录
         self.solves: list[str] = []
         self.current_activity = None
@@ -161,9 +162,10 @@ class FakeBridge:
     def stop(self, stop_simulator=True):
         self.stop_calls.append(stop_simulator)
 
-    def switch_game_account(self, account_index):
+    def switch_game_account(self, account_index, phone_tail=""):
         self.solves.append("switch_account")
         self.switched.append(account_index)
+        self.tails.append(phone_tail)
         if getattr(self, "switch_ok", True):
             return True
         raise RuntimeError("模拟切换失败")
@@ -1235,23 +1237,25 @@ async def test_special_task_not_run_twice_when_enabled(tmp_path):
 # ---- 游戏内切换账号模式（AccountConfig.game_account_index / AccountSwitchConfig） ----
 
 
-def _enable_switch(engine, index=1, **kwargs):
+def _enable_switch(engine, index=1, tail="", **kwargs):
     """把 engine 切到游戏内切换账号模式（默认 NormalSwitchConfig 覆盖坐标/超时）"""
     from baas_plus.config import AccountSwitchConfig
 
     engine.account_switch = AccountSwitchConfig(enabled=True, **kwargs)
     engine.config.game_account_index = index
+    engine.config.game_account_phone_tail = tail
     return engine
 
 
 @pytest.mark.asyncio
 async def test_switch_mode_uses_switch_game_account(tmp_path):
-    """切换模式：启动游戏改走 switch_game_account（带游戏账号序号），不走 launch_game"""
+    """切换模式：启动游戏改走 switch_game_account（带序号与手机尾号），不走 launch_game"""
     bridge = FakeBridge(ap=100)
     engine = make_engine(bridge, events=[], data_dir=str(tmp_path), baas={"tasks": []})
-    _enable_switch(engine, index=2)
+    _enable_switch(engine, index=2, tail="9524")
     result = await engine.run_once()
     assert bridge.switched == [2]
+    assert bridge.tails == ["9524"]  # 手机尾号随调用透传（OCR 匹配点选用）
     assert "switch_account" in result.executed_tasks
     assert "restart" not in bridge.solves  # launch_game 未被调用
     assert bridge.solves[0] == "switch_account"  # 启动路径第一步就是切换账号

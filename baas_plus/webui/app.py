@@ -152,13 +152,19 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.post("/api/accounts")
     def create_account(body: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        """新建账号：复制默认账号（accounts[0]）配置，仅替换 id/name"""
+        """新建账号：复制默认账号（accounts[0]）配置，仅替换 id/name
+
+        手机尾号不复制（各账号尾号必须互不相同，复制会导致唯一性校验失败），
+        游戏账号序号同样清零，需用户在新账号里自行填写。
+        """
         nonlocal config
         template = config.accounts[0]
         new = template.model_copy(deep=True)
         new.id = f"acc_{uuid.uuid4().hex[:8]}"
         new.name = ((body or {}).get("name") or "").strip() or f"账号 {len(config.accounts) + 1}"
         new.enabled = True
+        new.game_account_phone_tail = ""
+        new.game_account_index = 0
         config.accounts.append(new)
         save_config(config)
         return new.model_dump()

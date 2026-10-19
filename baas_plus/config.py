@@ -11,8 +11,10 @@ activity/sweep）在加载时自动迁移到 accounts[0]，活动设置提升为
 
 游戏内切换账号（AccountSwitchConfig，全局）：开启后多账号不再「一账号一个
 模拟器多开实例」，而是共用同一个模拟器实例，在每个账号执行开始时通过游戏
-登录界面（Yostar 账号选择框）切换游戏账号；每个账号需配置自身在 Yostar
-下拉列表中的序号（AccountConfig.game_account_index，从 1 开始）。
+登录界面（Yostar 账号选择框）切换游戏账号；Yostar 账号列表按上次登录时间
+排序、顺序不固定，因此每个账号需配置自己的手机尾号（AccountConfig.
+game_account_phone_tail，OCR 匹配条目号码点选，推荐）或下拉列表序号
+（AccountConfig.game_account_index，不推荐）。
 """
 from __future__ import annotations
 
@@ -221,8 +223,9 @@ class AccountSwitchConfig(BaseModel):
     account_row_height: int = 100
     # 重启 BA 后等待登录界面出现的最长时间（秒；模拟器性能差/首次冷启动时调大）
     app_start_timeout: float = 120.0
-    # 登出后等待 Yostar 账号选择框出现的最长时间（秒）
-    dialog_timeout: float = 60.0
+    # 登出后等待 Yostar 账号选择框出现的最长时间（秒；登出动画/慢机器下过渡页
+    # 可能迟迟不唤出选择框，默认 300s 留足余量）
+    dialog_timeout: float = 300.0
     # 疑似「自动登录」的盲等窗口（秒）：重启游戏后持续这么久识别不到任何已知
     # 界面特征（登录界面/选择框/标题横幅），判定游戏带着当前账号自动登录直接
     # 进了主界面 → 再次杀进程重启复位（最多 2 次）。冷启动加载慢的机器调大，
@@ -247,9 +250,14 @@ class AccountConfig(BaseModel):
     id: str = Field(default_factory=lambda: f"acc_{uuid.uuid4().hex[:8]}")
     name: str = "默认账号"
     enabled: bool = True  # 是否参与批量执行（run 不带 --account 时）
+    # 本账号 Yostar 登录界面下拉列表中显示的手机号尾号（列表显示「136****3522」，
+    # 填后几位数字如 "3522"）。账号列表按上次登录时间排序、**顺序不固定**，
+    # 切换账号时靠 OCR 各条目号码匹配尾号点选，不依赖位置；设置了尾号时优先于
+    # game_account_index 使用，留空 = 退回按序号点选（不推荐）
+    game_account_phone_tail: str = ""
     # 本账号在 Yostar 登录界面「账号下拉列表」中的序号（1 起，从上往下数）。
     # 仅游戏内切换账号模式（AppConfig.account_switch.enabled）下使用；0 = 未设置
-    # （切换模式下校验会拒绝，避免所有账号默认落在第 1 个游戏账号把日志打错号）。
+    # （切换模式下必须设置尾号或序号，避免所有账号默认落在第 1 个游戏账号打错号）
     game_account_index: int = Field(default=0, ge=0)
     simulator: SimulatorConfig = Field(default_factory=SimulatorConfig)
     baas: BaasConfig = Field(default_factory=BaasConfig)
@@ -259,6 +267,12 @@ class AccountConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_tasks(self) -> "AccountConfig":
+        tail = self.game_account_phone_tail.strip()
+        if tail and not tail.isdigit():
+            raise ValueError(
+                f"游戏账号手机尾号应为纯数字（Yostar 列表显示如 136****3522，填 3522）: "
+                f"{self.game_account_phone_tail!r}"
+            )
         unknown = [t for t in self.baas.tasks if t not in BAAS_TASKS]
         if unknown:
             raise ValueError(f"未知任务: {unknown}，可选: {BAAS_TASKS}")
@@ -316,17 +330,10 @@ class AppConfig(BaseModel):
         ids = [a.id for a in self.accounts]
         if len(ids) != len(set(ids)):
             raise ValueError(f"账号 id 重复: {ids}")
-        # 游戏内切换模式的合法性：同一模拟器实例 + 唯一且已设置的 Yostar 账号序号
-        # （不满足时游戏内切换会点错账号 / 打到同一个号，宁可配置阶段就报错）
+        # 游戏内切换模式的合法性：同一模拟器实例 + 每个账号能被唯一定位
+        # （推荐 OCR 手机尾号匹配——列表按上次登录时间排序、顺序不固定；
+        #  未填尾号的账号退回按序号点选。定位不清会点错账号，配置阶段就报错）
         if self.account_switch.enabled:
-            indexes = [a.game_account_index for a in self.accounts]
-            if any(i < 1 for i in indexes):
-                raise ValueError(
-                    "游戏内切换账号模式下，每个账号必须设置游戏账号序号"
-                    "（game_account_index，Yostar 下拉列表中从上往下的序号，从 1 开始）"
-                )
-            if len(indexes) != len(set(indexes)):
-                raise ValueError(f"游戏账号序号必须互不相同: {indexes}")
             if len(self.accounts) > 1:
                 sim_keys = {(a.simulator.type, a.simulator.instance) for a in self.accounts}
                 if len(sim_keys) > 1:
@@ -334,6 +341,27 @@ class AppConfig(BaseModel):
                         "游戏内切换账号模式下，所有账号必须共用同一个模拟器实例"
                         "（模拟器类型与多开编号完全一致），不能再多开"
                     )
+            missing = [
+                a.name
+                for a in self.accounts
+                if not a.game_account_phone_tail.strip() and a.game_account_index < 1
+            ]
+            if missing:
+                raise ValueError(
+                    "游戏内切换账号模式下，每个账号必须设置手机尾号"
+                    "（game_account_phone_tail，Yostar 下拉列表显示的号码尾几位，"
+                    f'如 "3522"）或游戏账号序号（game_account_index）: {missing}'
+                )
+            tails = [a.game_account_phone_tail.strip() for a in self.accounts if a.game_account_phone_tail.strip()]
+            if len(tails) != len(set(tails)):
+                raise ValueError(f"游戏账号手机尾号必须互不相同: {tails}")
+            indexes = [
+                a.game_account_index
+                for a in self.accounts
+                if not a.game_account_phone_tail.strip()
+            ]
+            if len(indexes) != len(set(indexes)):
+                raise ValueError(f"游戏账号序号必须互不相同: {indexes}")
         return self
 
     @property

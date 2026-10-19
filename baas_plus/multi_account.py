@@ -140,7 +140,11 @@ class MultiAccountRunner:
             account.simulator.type,
             account.simulator.instance,
             (
-                f", 游戏账号序号 {account.game_account_index}"
+                (
+                    f", 游戏账号尾号 {account.game_account_phone_tail.strip()}"
+                    if account.game_account_phone_tail.strip()
+                    else f", 游戏账号序号 {account.game_account_index}"
+                )
                 if self._switch_mode
                 else ""
             ),
