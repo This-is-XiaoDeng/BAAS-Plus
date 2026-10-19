@@ -19,12 +19,15 @@ game_account_phone_tail，OCR 匹配条目号码点选，推荐）或下拉列�
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from pathlib import Path
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = os.environ.get(
     "BAAS_PLUS_CONFIG", str(Path(__file__).resolve().parent.parent / "data" / "config.json")
@@ -411,6 +414,49 @@ def _promote_global_activity(data: dict) -> dict:
     return migrated
 
 
+# 已被取代的账号切换等待超时默认值（字段名 → 旧默认值）。
+#
+# 旧版 AccountSwitchConfig 的 app_start_timeout / blind_restart_after 默认 120s，
+# 真机 adb 实测（720p 模拟器）「杀进程重开 → Yostar 登录框出现」为 106~114s，
+# 首次冷启动含「正在初始化游戏数据」约 240s —— 120s 只剩个位数余量，慢机器必然
+# 在加载途中被判超时（报「等待登录界面超时（120s）」）。
+#
+# 代码默认值已放大到 300s，但**光改默认值救不了已有配置**：旧版 WebUI 前端没有
+# app_start_timeout 控件，保存时会按当时的默认值 120 回填并写进 data/config.json，
+# 而 pydantic 默认值只对**缺失**字段生效 —— 用户升级后配置里仍留着 120，继续超时。
+# 因此加载时把「恰好等于旧默认值」的字段删掉（回落到当前默认值）；用户自己调过的
+# 值（如 90s / 600s）一律不动。
+_SUPERSEDED_SWITCH_TIMEOUT_DEFAULTS: dict[str, float] = {
+    "app_start_timeout": 120.0,
+    "blind_restart_after": 120.0,
+}
+
+
+def _migrate_superseded_switch_timeouts(data: dict) -> dict:
+    """把账号切换里「恰好等于旧默认值」的等待超时删掉，回落到当前默认值
+
+    只在确有字段需要迁移时返回新 dict，其余情况原样返回（不做破坏性改写）。
+    """
+    sw = data.get("account_switch")
+    if not isinstance(sw, dict):
+        return data
+    stale = {
+        key: sw[key]
+        for key, old_default in _SUPERSEDED_SWITCH_TIMEOUT_DEFAULTS.items()
+        if sw.get(key) == old_default
+    }
+    if not stale:
+        return data
+    migrated = dict(data)
+    migrated["account_switch"] = {k: v for k, v in sw.items() if k not in stale}
+    logger.info(
+        "账号切换等待超时 %s 是已废弃的旧默认值，已回落到当前默认值"
+        "（实测「重开 → 登录界面」需 106~240s，120s 会在游戏加载途中被判超时）",
+        ", ".join(f"{key}={value:g}s" for key, value in stale.items()),
+    )
+    return migrated
+
+
 def _migrate_legacy_config(data: dict) -> dict:
     """旧版单账号配置（顶层 simulator/baas/activity/sweep）→ 新结构 accounts[0]
 
@@ -419,10 +465,11 @@ def _migrate_legacy_config(data: dict) -> dict:
     活动设置（activity 及 baas.current_activity / baas.banner_region）不再按
     账号配置，统一提升为全局 activity（见 _promote_global_activity）。
     已是最新结构（无账号级活动设置可提升）时原样返回，不做破坏性改写。
+    最后统一走 _migrate_superseded_switch_timeouts（账号切换等待超时的旧默认值迁移）。
     """
     if "accounts" not in data:
         if not any(k in data for k in LEGACY_ACCOUNT_FIELDS):
-            return data
+            return _migrate_superseded_switch_timeouts(data)
         migrated = dict(data)
         account: dict[str, object] = {
             "id": "acc_default",
@@ -436,7 +483,7 @@ def _migrate_legacy_config(data: dict) -> dict:
             account["notify_to_addrs"] = migrated.pop("notify_to_addrs")
         migrated["accounts"] = [account]
         data = migrated
-    return _promote_global_activity(data)
+    return _migrate_superseded_switch_timeouts(_promote_global_activity(data))
 
 
 def load_config(path: str | None = None) -> AppConfig:

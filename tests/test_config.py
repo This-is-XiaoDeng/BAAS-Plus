@@ -373,6 +373,57 @@ def test_account_switch_defaults_off():
     assert config.accounts[0].game_account_index == 0
 
 
+def test_migrate_legacy_switch_timeout_defaults():
+    """旧版 WebUI 写进配置的 120s（当时的默认值）在加载时回落到当前默认 300s
+
+    回归：用户升级到「默认 300s」的版本后仍报「等待登录界面超时（120s）」——
+    旧版前端没有 app_start_timeout 控件，保存时按 120 回填进 config.json，
+    而 pydantic 默认值只对**缺失**字段生效，光改代码默认值救不了已有配置。
+    """
+    data = {
+        "accounts": [{"id": "acc_default", "name": "默认账号", "game_account_index": 1}],
+        "account_switch": {
+            "enabled": True,
+            "app_start_timeout": 120.0,
+            "blind_restart_after": 120.0,
+            "dialog_timeout": 300.0,
+        },
+    }
+    migrated = _migrate_legacy_config(data)
+    assert "app_start_timeout" not in migrated["account_switch"]
+    assert "blind_restart_after" not in migrated["account_switch"]
+    assert migrated["account_switch"]["dialog_timeout"] == 300.0  # 其他字段不动
+    assert data["account_switch"]["app_start_timeout"] == 120.0  # 原 dict 不被改写
+    config = AppConfig.model_validate(migrated)
+    assert config.account_switch.app_start_timeout == 300.0
+    assert config.account_switch.blind_restart_after == 300.0
+
+
+def test_migrate_keeps_custom_switch_timeouts():
+    """用户自己调过的超时值（不等于旧默认值）不迁移"""
+    data = {
+        "accounts": [{"id": "acc_default", "name": "默认账号"}],
+        "account_switch": {"app_start_timeout": 600.0, "blind_restart_after": 90.0},
+    }
+    assert _migrate_legacy_config(data) is data
+
+
+def test_load_config_migrates_legacy_switch_timeout(tmp_path):
+    """端到端：旧配置落盘 → load_config 拿到放大后的默认超时"""
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "accounts": [{"id": "acc_default", "name": "默认账号", "game_account_index": 1}],
+                "account_switch": {"enabled": True, "app_start_timeout": 120},
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(str(path))
+    assert config.account_switch.app_start_timeout == 300.0
+
+
 def test_account_switch_roundtrip(tmp_path):
     config = AppConfig(
         account_switch={"enabled": True, "confirm_button": [700, 400], "dialog_timeout": 90},

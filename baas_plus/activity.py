@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -12,8 +14,17 @@ from typing import Any
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 GAMEKEE_API_BASE = "https://www.gamekee.com/v1"
 GAMEKEE_HEADERS = {"game-alias": "ba"}
+
+# GameKee 偶发返回 200 但 body 为空（实测会抛 JSONDecodeError: Expecting value:
+# line 1 column 1 (char 0)），或返回错误页 HTML。这类响应重试一次再报错：
+# 原始 JSONDecodeError 看不出是「数据源抽风」还是「配置/代码问题」，
+# 报错里补上 URL、状态与响应摘要（见 _fetch_json）。
+FETCH_MAX_ATTEMPTS = 2
+FETCH_RETRY_DELAY = 1.0
 
 SERVER_ID_MAP: dict[str, int] = {"cn": 16, "in": 17, "jp": 15}
 
@@ -83,10 +94,37 @@ class ActivityFetcher:
         self.timeout = timeout
 
     async def _fetch_json(self, url: str, params: dict[str, Any]) -> dict:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(url, params=params, headers=GAMEKEE_HEADERS)
-            resp.raise_for_status()
-            return resp.json()
+        """GET 并解析 JSON；空响应/非 JSON 重试一次后抛 RuntimeError
+
+        GameKee 偶发返回 200 + 空 body，此时 resp.json() 抛
+        「Expecting value: line 1 column 1 (char 0)」——这个报错既不说明是哪
+        个接口，也看不出是站点抽风还是配置问题（曾被当成账号执行失败的根因
+        抛到用户面前）。这里对空/非 JSON 响应重试一次，仍失败则抛带 URL 与
+        响应摘要的 RuntimeError，明确指向第三方数据源。
+        """
+        last_error = ""
+        for attempt in range(1, FETCH_MAX_ATTEMPTS + 1):
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get(url, params=params, headers=GAMEKEE_HEADERS)
+                resp.raise_for_status()
+                body = resp.text
+            if body.strip():
+                try:
+                    return resp.json()
+                except ValueError as exc:  # 非 JSON（错误页 HTML / 截断的 body）
+                    last_error = f"响应不是 JSON（{exc}）：{body.strip()[:120]!r}"
+            else:
+                last_error = "响应 body 为空"
+            if attempt < FETCH_MAX_ATTEMPTS:
+                logger.warning(
+                    "活动数据源响应异常（第 %d/%d 次尝试）: %s，%.1fs 后重试（%s）",
+                    attempt, FETCH_MAX_ATTEMPTS, last_error, FETCH_RETRY_DELAY, url,
+                )
+                await asyncio.sleep(FETCH_RETRY_DELAY)
+        raise RuntimeError(
+            f"活动数据源（GameKee）返回异常: {last_error}；接口 {url}。"
+            "这是第三方站点侧的问题（空响应/错误页），稍后重试即可，不代表当前没有活动"
+        )
 
     async def fetch_card_pools(self) -> list[GameEvent]:
         """卡池"""
@@ -188,8 +226,6 @@ class ActivityFetcher:
 
     async def fetch_all(self) -> list[GameEvent]:
         """拉取全部事件（按 id 去重，总力战优先于活动——GameKee 中同一活动会同时出现在两个接口）"""
-        import asyncio
-
         cards, activities, assaults = await asyncio.gather(
             self.fetch_card_pools(),
             self.fetch_activities(),

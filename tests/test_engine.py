@@ -276,6 +276,46 @@ async def test_run_once_no_activity(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_once_activity_fetch_failure_does_not_fail_account(tmp_path):
+    """活动数据源抽风（空响应/超时）只记警告并继续日常任务，不再让整轮执行失败
+
+    回归：GameKee 偶发返回 200 + 空 body → JSONDecodeError: Expecting value:
+    line 1 column 1 (char 0) 冒泡成「执行失败」，该账号当轮连日常任务都没跑。
+    """
+    bridge = FakeBridge(ap=100)
+    engine = make_engine(
+        bridge, events=[], data_dir=str(tmp_path),
+        baas={"tasks": ["cafe_reward", "mail"]},
+        sweep={"normal_tasks": ["15-1-99"]},
+    )
+
+    async def boom():
+        raise RuntimeError("活动数据源（GameKee）返回异常: 响应 body 为空")
+
+    engine.fetcher.fetch_all = boom
+    result = await engine.run_once()
+    assert result.status == "success"
+    assert any("活动检测失败" in w for w in result.warnings)
+    assert "cafe_reward" in result.executed_tasks
+    assert bridge.normal_tasks == ["15-1-10"]  # 扫荡照常按体力重算
+
+
+@pytest.mark.asyncio
+async def test_select_sweep_activity_fetch_failure_skips_activity(tmp_path):
+    """扫荡阶段选活动时数据源失败：返回 None（跳过活动扫荡），不抛错中断扫荡"""
+    bridge = FakeBridge(ap=100)
+    bridge.activity_modules = ["SayBing"]
+    engine = make_engine(bridge, events=[], data_dir=str(tmp_path), baas={"tasks": []})
+    engine.activity.current_activity = ""  # 不手动指定活动，走 GameKee 启发式匹配
+
+    async def boom():
+        raise RuntimeError("活动数据源（GameKee）返回异常: 响应 body 为空")
+
+    engine.fetcher.fetch_all = boom
+    assert await engine._select_sweep_activity() is None
+
+
+@pytest.mark.asyncio
 async def test_run_once_new_activity_triggers_push(tmp_path):
     event = GameEvent(
         id=1, title="新活动", start_at=int(time.time()) - 10,

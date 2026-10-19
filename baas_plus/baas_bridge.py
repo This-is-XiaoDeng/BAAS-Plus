@@ -1507,7 +1507,13 @@ class BaasBridge:
         if u2 is None:
             raise RuntimeError("设备连接未就绪（u2 未初始化），无法切换游戏账号")
         pkg = self.config.baas.game_package_name
-        logger.info("游戏内切换账号: 目标第 %d 个游戏账号（包 %s）", account_index, pkg)
+        # 打出实际生效的等待上限：配置里残留的旧默认值（120s，实测重开到登录
+        # 界面需 106~240s）会让流程在游戏加载途中超时，日志里能直接看到
+        logger.info(
+            "游戏内切换账号: 目标第 %d 个游戏账号（包 %s；等登录界面 %.0fs，"
+            "等选择框 %.0fs，自动登录盲等兜底 %.0fs）",
+            account_index, pkg, sw.app_start_timeout, sw.dialog_timeout, sw.blind_restart_after,
+        )
 
         # 1. 重启 BA 到登录界面（杀进程重开是确定的复位方式）
         try:

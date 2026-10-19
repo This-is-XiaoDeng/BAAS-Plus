@@ -4,6 +4,7 @@ import time
 import httpx
 import pytest
 
+from baas_plus import activity as activity_module
 from baas_plus.activity import ActivityFetcher, EventType, GameEvent
 
 EVENT_ITEM = {
@@ -143,10 +144,63 @@ async def test_fetch_all_dedupe():
     assert types.count(EventType.CARD) == 1
 
 
+def _patch_async_client(monkeypatch, handler):
+    """把 ActivityFetcher._fetch_json 内部新建的 AsyncClient 换成假 transport"""
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        return real_client(transport=FakeTransport(handler))
+
+    monkeypatch.setattr(httpx, "AsyncClient", fake_client)
+
+
+async def test_fetch_json_empty_body_retries_then_reports_source(monkeypatch):
+    """GameKee 返回 200 + 空 body（原始报错 Expecting value: line 1 column 1 (char 0)）：
+    重试一次仍为空则抛指向数据源的 RuntimeError，报错里带接口地址"""
+    calls = {"n": 0}
+
+    async def handler(request):
+        calls["n"] += 1
+        return httpx.Response(200, text="")
+
+    _patch_async_client(monkeypatch, handler)
+    monkeypatch.setattr(activity_module, "FETCH_RETRY_DELAY", 0)
+    fetcher = ActivityFetcher("cn", timeout=1.0)
+    with pytest.raises(RuntimeError, match="活动数据源（GameKee）返回异常"):
+        await fetcher._fetch_json(f"{activity_module.GAMEKEE_API_BASE}/activity/page-list", {})
+    assert calls["n"] == 2  # 空响应重试一次
+
+
+async def test_fetch_json_retries_transient_empty_body(monkeypatch):
+    """偶发空 body 后重试成功：不把数据源抖动抛给上层"""
+    responses = [httpx.Response(200, text=""), httpx.Response(200, json={"data": [EVENT_ITEM]})]
+
+    async def handler(request):
+        return responses.pop(0)
+
+    _patch_async_client(monkeypatch, handler)
+    monkeypatch.setattr(activity_module, "FETCH_RETRY_DELAY", 0)
+    fetcher = ActivityFetcher("cn", timeout=1.0)
+    data = await fetcher._fetch_json(f"{activity_module.GAMEKEE_API_BASE}/activity/page-list", {})
+    assert data == {"data": [EVENT_ITEM]}
+
+
+async def test_fetch_json_non_json_body_reports_snippet(monkeypatch):
+    """返回错误页 HTML 时：报错指出「不是 JSON」并附响应摘要（不抛裸 JSONDecodeError）"""
+
+    async def handler(request):
+        return httpx.Response(200, text="<html>502 Bad Gateway</html>")
+
+    _patch_async_client(monkeypatch, handler)
+    monkeypatch.setattr(activity_module, "FETCH_RETRY_DELAY", 0)
+    fetcher = ActivityFetcher("cn", timeout=1.0)
+    with pytest.raises(RuntimeError, match="响应不是 JSON"):
+        await fetcher._fetch_json(f"{activity_module.GAMEKEE_API_BASE}/activity/page-list", {})
+
+
 def test_game_event_key():
     e = GameEvent(id=1, title="t", start_at=0, end_at=0, event_type=EventType.EVENT)
     assert e.key == "event:1"
-
 
 def test_sweepable_only_event():
     """仅常规活动需要扫荡；总力战/大决战/卡池不需要"""

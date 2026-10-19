@@ -224,7 +224,13 @@ class Engine:
         if not modules:
             logger.warning("无法扫描 BAAS 活动模块列表")
             return None
-        events = await self.fetcher.fetch_all()
+        try:
+            events = await self.fetcher.fetch_all()
+        except Exception as exc:  # noqa: BLE001
+            # 数据源抽风不该让扫荡阶段失败（那会连带整轮执行失败）：跳过活动
+            # 扫荡，体力照旧交给普通/困难图与特别委托
+            logger.warning("活动数据源拉取失败，跳过活动扫荡（普通/困难图不受影响）: %s", exc)
+            return None
         now = _now()
         for event in events:
             if event.event_type == EventType.EVENT and event.start_at <= now <= event.end_at:
@@ -653,8 +659,17 @@ class Engine:
                 adb = self.bridge.start_simulator()
             self.bridge.create_baas(adb)
 
-            # 2. 活动检测与推图
-            new_events = await self.detect_new_activities()
+            # 2. 活动检测与推图。活动数据源是第三方站点（GameKee），偶发空响应/
+            #    超时会抛错——**不能让它拖垮整个日常流程**（旧实现直接冒泡成
+            #    「执行失败: Expecting value: line 1 column 1 (char 0)」，该账号
+            #    当轮连日常任务都没跑）。这里只记警告并跳过本轮活动推送：失败时
+            #    没有标记任何活动为「已见」，下次执行会重新检测
+            try:
+                new_events = await self.detect_new_activities()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("活动检测失败（跳过活动推图，继续执行日常任务）: %s", exc)
+                self.result.warnings.append(f"活动检测失败（已跳过活动推图）: {exc}")
+                new_events = []
             self.result.new_activities = new_events
             for event in new_events:
                 if event.event_type == EventType.EVENT:
