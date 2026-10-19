@@ -647,9 +647,8 @@ def test_switch_game_account_retries_logout_when_confirm_missed(bridge, fast_clo
     ]
 
 
-def test_switch_game_account_restarts_on_auto_login(bridge, fast_clock, monkeypatch):
+def test_switch_game_account_restarts_on_auto_login(bridge, fast_clock):
     """自动登录复位：重启后识别不到任何特征（疑似直接进了主界面）→ 再次杀进程重启后恢复"""
-    monkeypatch.setattr("baas_plus.baas_bridge._SWITCH_BLIND_RESTART_AFTER", 4.0)
     # 重启前 3 轮全部落空（盲等 4s 触发重启），重启后第 1 轮识别到选择框
     baas = FakeSwitchBaasThread(
         ocr_texts={
@@ -659,7 +658,7 @@ def test_switch_game_account_restarts_on_auto_login(bridge, fast_clock, monkeypa
         },
         img=_blank_screen(),
     )
-    bridge = _switch_bridge(bridge, sw_kwargs={"app_start_timeout": 600.0})
+    bridge = _switch_bridge(bridge, sw_kwargs={"app_start_timeout": 600.0, "blind_restart_after": 4.0})
     bridge.baas_thread = baas
     bridge.switch_game_account(1)
     # 初始重启 + 1 次自动登录复位重启
@@ -673,14 +672,13 @@ def test_switch_game_account_restarts_on_auto_login(bridge, fast_clock, monkeypa
     assert baas.clicks == [(855, 315), (600, 420), (642, 430)]
 
 
-def test_switch_game_account_restart_cap(bridge, fast_clock, monkeypatch):
+def test_switch_game_account_restart_cap(bridge, fast_clock):
     """自动登录复位有次数上限：连续盲等只重启 _SWITCH_MAX_RESTARTS 次，最终抛超时错误"""
-    monkeypatch.setattr("baas_plus.baas_bridge._SWITCH_BLIND_RESTART_AFTER", 4.0)
     baas = FakeSwitchBaasThread(
         ocr_texts={_ENTER_REGION: [""], _SWITCH_REGION: [""], _TITLE_REGION: [""]},
         img=_blank_screen(),
     )
-    bridge = _switch_bridge(bridge, sw_kwargs={"app_start_timeout": 600.0})
+    bridge = _switch_bridge(bridge, sw_kwargs={"app_start_timeout": 600.0, "blind_restart_after": 4.0})
     bridge.baas_thread = baas
     with pytest.raises(RuntimeError, match="等待登录界面超时"):
         bridge.switch_game_account(1)

@@ -96,10 +96,10 @@ ENTER_GAME_TEXT = "进入游戏"
 TITLE_SCREEN_OCR_REGION = (450, 600, 830, 650)
 TITLE_SCREEN_TEXT = "点击任意区域进入游戏"
 
-# 疑似「自动登录」的处理：重启游戏后如果长时间（秒）识别不到任何已知界面
-# 特征（登录界面/选择框/标题横幅都没有，多半是游戏带着当前账号自动登录直接
-# 进了主界面）→ 再次杀进程重启复位；最多重启 _SWITCH_MAX_RESTARTS 次
-_SWITCH_BLIND_RESTART_AFTER = 45.0
+# 疑似「自动登录」的处理：重启游戏后如果持续 sw.blind_restart_after（秒，
+# 配置项，默认 120s）识别不到任何已知界面特征（登录界面/选择框/标题横幅都
+# 没有，多半是游戏带着当前账号自动登录直接进了主界面）→ 再次杀进程重启
+# 复位；最多重启 _SWITCH_MAX_RESTARTS 次
 _SWITCH_MAX_RESTARTS = 2
 # 「切换账号 → 确定」点击序列的总时限（秒），期间反复尝试直到确认登出生效
 _SWITCH_OP_TIMEOUT = 30.0
@@ -1525,8 +1525,8 @@ class BaasBridge:
            之后在登出过渡页点空白处唤出选择框；
         2. Yostar 账号选择框直接弹出（识别到「进入游戏」按钮）→ 跳过登出直接选号；
         3. 自动登录（重启后游戏带着当前账号直接进到主界面，任何特征都识别不到）
-           → 盲等超过 _SWITCH_BLIND_RESTART_AFTER 秒后再次杀进程重启复位，
-           最多 _SWITCH_MAX_RESTARTS 次，重启后重新识别。
+           → 盲等超过 sw.blind_restart_after 秒后再次杀进程重启复位，
+           最多 _SWITCH_MAX_RESTARTS 次，重启后重新识别（总时限重新起算）。
 
         安全顺序：每轮先 OCR 再点击；未完成登出（logged_out=False）时绝不点
         空白——登录界面/标题页点空白等于「点击任意区域进入游戏」，会把当前
@@ -1537,7 +1537,44 @@ class BaasBridge:
         logged_out = False  # 是否确认完成「切换账号 → 确定」登出
         restarts = 0  # 疑似自动登录时的重启次数
         last_seen = time.time()  # 最近一次识别到任何已知界面特征的时间
-        while time.time() < deadline:
+        while True:
+            # 先判定盲等与总超时（放在 OCR 之前，保证任何界面状态下循环都会
+            # 推进或退出，不会出现「一直识别得到某个状态但流程不推进」的空转）
+            blind = time.time() - last_seen
+            if blind >= sw.blind_restart_after:
+                if restarts >= _SWITCH_MAX_RESTARTS:
+                    raise RuntimeError(
+                        f"疑似游戏已自动登录直接进了主界面（或加载过慢）："
+                        f"重启 {restarts} 次后仍连续 {sw.blind_restart_after:.0f}s "
+                        "未识别到任何界面特征（等待登录界面超时）。请确认模拟器分辨率/"
+                        "游戏版本与配置坐标匹配（WebUI「游戏内切换账号」可调），"
+                        "或在游戏内手动登出后重试"
+                    )
+                restarts += 1
+                logger.warning(
+                    "%.0fs 未识别到任何界面特征，疑似游戏已自动登录直接进了主界面，"
+                    "第 %d/%d 次重启游戏复位",
+                    blind, restarts, _SWITCH_MAX_RESTARTS,
+                )
+                self._restart_game()
+                last_seen = time.time()
+                logged_out = False  # 全新启动，未登出（点空白仍不安全）
+                # 每次重启单独起算 app_start_timeout，避免总时限挤占盲等窗口
+                deadline = time.time() + sw.app_start_timeout
+                continue
+            if time.time() >= deadline:
+                # 总超时：按是否已完成登出给出不同的排查指引
+                if logged_out:
+                    raise RuntimeError(
+                        f"等待 Yostar 账号选择框超时（{sw.dialog_timeout:.0f}s）："
+                        f"未识别到「{ENTER_GAME_TEXT}」按钮，"
+                        "请确认已登录过 Yostar 账号、且坐标配置与当前游戏版本一致"
+                    )
+                raise RuntimeError(
+                    f"等待登录界面超时（{sw.app_start_timeout:.0f}s）：未识别到「{SWITCH_BUTTON_TEXT}」按钮，"
+                    "请确认模拟器分辨率/游戏版本与配置坐标匹配（WebUI「游戏内切换账号」可调）；"
+                    "若重启后游戏自动登录直接进了主界面，可增大超时或手动登出后重试"
+                )
             enter_game_visible = switch_visible = title_visible = False
             try:
                 # 按需识别（省 OCR）：先查选择框，再查「切换账号」，最后查标题横幅
@@ -1560,8 +1597,8 @@ class BaasBridge:
             #     （_click_account_switch 失败的 RuntimeError 必须直接抛出——
             #      在身份不明的界面状态下继续点击会打在错误账号上）
             if switch_visible:
-                last_seen = time.time()
                 self._click_account_switch(sw)
+                last_seen = time.time()
                 logged_out = True
                 # 登出后等待选择框用 dialog_timeout（登出动画/唤出可能较慢）
                 deadline = time.time() + sw.dialog_timeout
@@ -1571,37 +1608,14 @@ class BaasBridge:
             if title_visible:
                 last_seen = time.time()
                 if not logged_out:
+                    time.sleep(2)
                     continue
                 logger.info("登出过渡页: 点击空白处唤出账号选择框 %s", sw.blank_click)
                 self.baas_thread.click(*sw.blank_click)
                 time.sleep(2)
                 continue
             # 2.4 三种特征都识别不到：可能在加载（刚重启），也可能已自动登录进游戏
-            blind = time.time() - last_seen
-            if blind >= _SWITCH_BLIND_RESTART_AFTER and restarts < _SWITCH_MAX_RESTARTS:
-                restarts += 1
-                logger.warning(
-                    "%.0fs 未识别到任何界面特征，疑似游戏已自动登录直接进了主界面，"
-                    "第 %d/%d 次重启游戏复位",
-                    blind, restarts, _SWITCH_MAX_RESTARTS,
-                )
-                self._restart_game()
-                last_seen = time.time()
-                logged_out = False  # 全新启动，未登出（点空白仍不安全）
-                continue
             time.sleep(2)
-        # 超时：按是否已完成登出给出不同的排查指引
-        if logged_out:
-            raise RuntimeError(
-                f"等待 Yostar 账号选择框超时（{sw.dialog_timeout:.0f}s）："
-                f"未识别到「{ENTER_GAME_TEXT}」按钮，"
-                "请确认已登录过 Yostar 账号、且坐标配置与当前游戏版本一致"
-            )
-        raise RuntimeError(
-            f"等待登录界面超时（{sw.app_start_timeout:.0f}s）：未识别到「{SWITCH_BUTTON_TEXT}」按钮，"
-            "请确认模拟器分辨率/游戏版本与配置坐标匹配（WebUI「游戏内切换账号」可调）；"
-            "若重启后游戏自动登录直接进了主界面，可增大超时或手动登出后重试"
-        )
 
     def _select_account_and_enter(self, sw: AccountSwitchConfig, account_index: int) -> None:
         """展开账号下拉列表 → 点击第 account_index 个账号 → 「进入游戏」→ 回主界面"""

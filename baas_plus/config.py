@@ -223,6 +223,11 @@ class AccountSwitchConfig(BaseModel):
     app_start_timeout: float = 120.0
     # 登出后等待 Yostar 账号选择框出现的最长时间（秒）
     dialog_timeout: float = 60.0
+    # 疑似「自动登录」的盲等窗口（秒）：重启游戏后持续这么久识别不到任何已知
+    # 界面特征（登录界面/选择框/标题横幅），判定游戏带着当前账号自动登录直接
+    # 进了主界面 → 再次杀进程重启复位（最多 2 次）。冷启动加载慢的机器调大，
+    # 避免把还在加载的游戏误杀重启（重启反而更慢）
+    blind_restart_after: float = 120.0
 
 
 class WebUIConfig(BaseModel):

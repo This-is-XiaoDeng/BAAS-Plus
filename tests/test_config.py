@@ -361,6 +361,8 @@ def test_account_switch_defaults_off():
     assert config.account_switch.enter_game_button == (642, 430)
     assert config.account_switch.first_account_pos == (600, 420)
     assert config.account_switch.account_row_height == 100
+    # 盲等窗口（疑似自动登录判定）默认 120s，旧配置缺字段时向后兼容
+    assert config.account_switch.blind_restart_after == 120.0
     # 账号默认未设置游戏账号序号（0），不开启切换模式时无影响
     assert config.accounts[0].game_account_index == 0
 

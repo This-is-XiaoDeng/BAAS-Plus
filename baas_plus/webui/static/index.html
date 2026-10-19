@@ -213,6 +213,10 @@
           <div><label>账号条目行高（px）</label><input id="sw_account_row_height" type="number" value="100"></div>
           <div><label>等「进入游戏」出现超时（秒）</label><input id="sw_dialog_timeout" type="number" value="60"></div>
         </div>
+        <div class="row">
+          <div><label title="重启游戏后持续这么久识别不到任何界面特征（登录界面/选择框/标题横幅），判定疑似自动登录进了主界面 → 再重启复位（最多 2 次）。冷启动加载慢的机器调大，避免把还在加载的游戏误杀重启">自动登录判定窗口（秒）</label><input id="sw_blind_restart_after" type="number" value="120"></div>
+          <div></div>
+        </div>
         <p class="hint">仅在分辨率/游戏版本更新导致点击错位时修改；模拟器分辨率非 720p 时 BAAS 会自动按比例缩放坐标。</p>
       </details>
     </div>
@@ -495,6 +499,7 @@ function loadForm() {
   $('sw_first_account_pos').value = _pair(sw.first_account_pos, '600,420');
   $('sw_account_row_height').value = sw.account_row_height != null ? sw.account_row_height : 100;
   $('sw_dialog_timeout').value = sw.dialog_timeout != null ? sw.dialog_timeout : 60;
+  $('sw_blind_restart_after').value = sw.blind_restart_after != null ? sw.blind_restart_after : 120;
   // 全局活动设置（「活动」页，不随账号变化；兼容旧配置里 activity 缺失时的默认值）
   const g = cfg.activity || {};
   $('baas_current_activity').value = g.current_activity || '';
@@ -601,6 +606,7 @@ function collectConfig() {
       first_account_pos: _parsePair($('sw_first_account_pos').value, oldSw.first_account_pos || [600, 420]),
       account_row_height: parseInt($('sw_account_row_height').value) || (oldSw.account_row_height ?? 100),
       dialog_timeout: parseFloat($('sw_dialog_timeout').value) || (oldSw.dialog_timeout ?? 60),
+      blind_restart_after: parseFloat($('sw_blind_restart_after').value) || (oldSw.blind_restart_after ?? 120),
       // 前端没有对应控件的老字段：原样带回去（否则保存会把用户改过的值重置成默认）
       app_start_timeout: oldSw.app_start_timeout != null ? oldSw.app_start_timeout : 120,
     },
