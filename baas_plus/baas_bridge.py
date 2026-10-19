@@ -112,6 +112,24 @@ _SWITCH_ROW_SCAN_LIMIT = 6
 # （720p 基准，实测 1280x720 实机截图：号码文字如「136****3522」位于点击点
 # 上方约 12~30px、x 479~624，此处各留边距容 OCR 抖动/游戏版本微调）
 _ACCOUNT_NUMBER_OCR_OFFSET = (-135, -36, 45, -4)  # (x1, y1, x2, y2) 相对 (first.x, click_y)
+# 账号条目「是否仍在 Yostar 白色卡片内」的行内采样点（相对 first.x 的 x 偏移）。
+# 曾用单点 (first.x + 100)：下拉弹层的右边界比它窄时该点落在卡片外，
+# 会把还在卡片内的条目误判成卡片外 → 整轮扫描在第 1 行就中断（一行都不 OCR，
+# 报错里 OCR 结果为空，把排查方向引向用户的尾号配置）
+_ROW_CARD_SAMPLE_DX = (60, 100, 150)
+# 卡片面亮度阈值（三通道最小值）：纯白卡片 255；「当前账号」选中态浅蓝/浅灰
+# 实测约 214~246；卡片外背景（云层/版权文字底）约 180~200 且明显偏灰。
+# 取 200 而非 230：230 会把选中态高亮底色误判成卡片外（见上）
+_ROW_CARD_MIN_LIGHT = 200
+# 扫描开始时允许的连续「卡片外」行数：账号列表首条通常是**当前账号**（选中态
+# 底色比纯白暗），不能因为第 1 行不是纯白就放弃整轮扫描。一旦扫描到过卡片内
+# 的行，后面第一行卡片外即停止（保住「不把卡片下方背景文字当号码」的防线）
+_ROW_CARD_MAX_LEADING_MISSES = 2
+# 确认「游戏已进主界面」用的 BAAS 特征名（to_main_page 的 co_detect 结束条件）
+_MAIN_PAGE_FEATURE = "main_page"
+# 重启游戏后多久才允许用主界面特征判定「自动登录」：刚 app_start 的瞬间
+# 内存帧可能还是上一进程/启动器的画面，过早判定会把还在加载的游戏杀掉
+_MAIN_PAGE_PROBE_MIN_BLIND = 10.0
 
 
 def import_baas(repo_dir: str = "") -> Any:
@@ -258,6 +276,11 @@ class BaasBridge:
         # 启动模拟器时发现并保存的 ADB 地址（游戏内切换模式下，后续账号直接
         # 复用运行中的模拟器，不重新 start_simulator）
         self.adb_address: str | None = None
+        # 主界面特征比对用的 BAAS core.image：惰性加载并缓存。import_baas 每次
+        # 都会跑 repair_static_config（读写 static.json），不能放进切换流程的
+        # 热循环里反复调用
+        self._image_module: Any | None = None
+        self._image_module_loaded = False
 
     # ---- 模拟器 ----
 
@@ -1547,6 +1570,40 @@ class BaasBridge:
             time.sleep(1)
         return False
 
+    def _on_game_main_page(self) -> bool:
+        """能否确认游戏已经进入主界面（BAAS 的 main_page 特征）
+
+        用于把「重启后自动登录直接进了主界面」与「游戏还在加载」区分开：两种
+        情况都识别不到登录界面/选择框/标题横幅，但只有前者能匹配到主界面特征。
+        拿不到证据（BAAS 不可用/特征比对异常）一律返回 False——宁可不重启多等，
+        也不要把还在加载的游戏杀掉重启（重启只会更慢）。
+        """
+        baas = self.baas_thread
+        if baas is None:
+            return False
+        if not self._image_module_loaded:
+            self._image_module_loaded = True
+            try:
+                import_baas(self.config.baas.repo_dir)
+                from core import image
+
+                self._image_module = image
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "BAAS core.image 不可用（%s），自动登录判定退回盲等计时", exc
+                )
+        image = self._image_module
+        if image is None:
+            return False
+        try:
+            update = getattr(baas, "update_screenshot_array", None)
+            if callable(update):
+                update()
+            return bool(image.compare_image(baas, _MAIN_PAGE_FEATURE))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("主界面特征比对失败（%s），按「未自动登录」处理", exc)
+            return False
+
     def _reach_yostar_dialog(self, sw: AccountSwitchConfig) -> None:
         """重启 BA 后自动识别界面状态并推进，直到 Yostar 账号选择框可见
 
@@ -1568,10 +1625,36 @@ class BaasBridge:
         restarts = 0  # 疑似自动登录时的重启次数
         last_seen = time.time()  # 最近一次识别到任何已知界面特征的时间
         while True:
-            # 先判定盲等与总超时（放在 OCR 之前，保证任何界面状态下循环都会
-            # 推进或退出，不会出现「一直识别得到某个状态但流程不推进」的空转）
-            blind = time.time() - last_seen
-            if blind >= sw.blind_restart_after:
+            # 先判定总超时与盲等（放在 OCR 之前，保证任何界面状态下循环都会
+            # 推进或退出，不会出现「一直识别得到某个状态但流程不推进」的空转）。
+            # 顺序很重要：总超时必须先判——两者都用「距上次识别到特征的时间」
+            # 起算，默认值又相同（app_start_timeout=blind_restart_after=120s），
+            # 若先判盲等，超时分支永远轮不到，慢冷启动的游戏会在加载途中被反复
+            # 杀掉重启，最后报出「疑似自动登录」这种指向错误的结论
+            now = time.time()
+            if now >= deadline:
+                # 总超时：按是否已完成登出给出不同的排查指引
+                if logged_out:
+                    raise RuntimeError(
+                        f"等待 Yostar 账号选择框超时（{sw.dialog_timeout:.0f}s）："
+                        f"未识别到「{ENTER_GAME_TEXT}」按钮，"
+                        "请确认已登录过 Yostar 账号、且坐标配置与当前游戏版本一致"
+                    )
+                raise RuntimeError(
+                    f"等待登录界面超时（{sw.app_start_timeout:.0f}s）：未识别到「{SWITCH_BUTTON_TEXT}」按钮，"
+                    "请确认模拟器分辨率/游戏版本与配置坐标匹配（WebUI「游戏内切换账号」可调）。"
+                    "登录界面/账号选择框/标题横幅三种特征都没识别到时，还可能是游戏加载慢"
+                    "（冷启动或远端模拟器，可增大本超时）；若游戏确实已带着当前账号自动登录"
+                    "进了主界面，请手动登出后重试"
+                )
+            blind = now - last_seen
+            # 自动登录判定：优先要「游戏已进主界面」这一正面证据（主界面特征），
+            # 拿不到证据才退回盲等计时（blind_restart_after 需短于 app_start_timeout
+            # 才会生效）。只靠盲等计时无法区分「还在加载」与「已自动登录」
+            auto_logged_in = (
+                self._on_game_main_page() if blind >= _MAIN_PAGE_PROBE_MIN_BLIND else False
+            )
+            if auto_logged_in or blind >= sw.blind_restart_after:
                 if restarts >= _SWITCH_MAX_RESTARTS:
                     raise RuntimeError(
                         f"疑似游戏已自动登录直接进了主界面（或加载过慢）："
@@ -1582,9 +1665,11 @@ class BaasBridge:
                     )
                 restarts += 1
                 logger.warning(
-                    "%.0fs 未识别到任何界面特征，疑似游戏已自动登录直接进了主界面，"
-                    "第 %d/%d 次重启游戏复位",
-                    blind, restarts, _SWITCH_MAX_RESTARTS,
+                    "%s，第 %d/%d 次重启游戏复位（已等待 %.0fs 未识别到任何界面特征）",
+                    "检测到游戏已在主界面（自动登录）"
+                    if auto_logged_in
+                    else "连续未识别到任何界面特征",
+                    restarts, _SWITCH_MAX_RESTARTS, blind,
                 )
                 self._restart_game()
                 last_seen = time.time()
@@ -1592,19 +1677,6 @@ class BaasBridge:
                 # 每次重启单独起算 app_start_timeout，避免总时限挤占盲等窗口
                 deadline = time.time() + sw.app_start_timeout
                 continue
-            if time.time() >= deadline:
-                # 总超时：按是否已完成登出给出不同的排查指引
-                if logged_out:
-                    raise RuntimeError(
-                        f"等待 Yostar 账号选择框超时（{sw.dialog_timeout:.0f}s）："
-                        f"未识别到「{ENTER_GAME_TEXT}」按钮，"
-                        "请确认已登录过 Yostar 账号、且坐标配置与当前游戏版本一致"
-                    )
-                raise RuntimeError(
-                    f"等待登录界面超时（{sw.app_start_timeout:.0f}s）：未识别到「{SWITCH_BUTTON_TEXT}」按钮，"
-                    "请确认模拟器分辨率/游戏版本与配置坐标匹配（WebUI「游戏内切换账号」可调）；"
-                    "若重启后游戏自动登录直接进了主界面，可增大超时或手动登出后重试"
-                )
             enter_game_visible = switch_visible = title_visible = False
             try:
                 # 按需识别（省 OCR）：先查选择框，再查「切换账号」，最后查标题横幅
@@ -1679,6 +1751,35 @@ class BaasBridge:
         self.close_announcement_popups(timeout=30)
         logger.info("已进入游戏并回到主界面（游戏内切换账号流程完成）")
 
+    def _row_in_yostar_card(self, sw: AccountSwitchConfig, click_y: int) -> bool:
+        """判断账号条目行是否仍在 Yostar 选择框的白色卡片内
+
+        扫描条目时防止把卡片下方的背景/版权文字数字误当号码：在条目行上按
+        _ROW_CARD_SAMPLE_DX 采样多个点，**任一点**为浅色（三通道最小值 >=
+        _ROW_CARD_MIN_LIGHT）即认为仍在卡片内。多点 + 阈值 200 是为了容两种
+        真实情况（单点 + 阈值 230 会把它们全判成卡片外，导致第 1 行就中断扫描）：
+        - 账号列表首条是「当前账号」，选中态底色是浅蓝/浅灰（约 214~246）；
+        - 下拉弹层的右边界比采样点窄，靠右的采样点落在卡片外。
+        拿不到截图时放行（不拦截扫描）。
+        """
+        img = getattr(self.baas_thread, "latest_img_array", None)
+        if img is None:
+            return True
+        ratio = getattr(self.baas_thread, "ratio", 1.0) or 1.0
+        x, _first_y = sw.first_account_pos
+        h, w = img.shape[:2]
+        sy = int(click_y * ratio)
+        if sy < 0 or sy >= h:
+            return False
+        for dx in _ROW_CARD_SAMPLE_DX:
+            sx = int((x + dx) * ratio)
+            if sx < 0 or sx >= w:
+                continue
+            b, g, r = (int(v) for v in img[sy, sx][:3])
+            if min(b, g, r) >= _ROW_CARD_MIN_LIGHT:
+                return True
+        return False
+
     def _find_account_row_by_tail(
         self, sw: AccountSwitchConfig, tail: str
     ) -> tuple[int, int]:
@@ -1689,19 +1790,38 @@ class BaasBridge:
         12~30px（_ACCOUNT_NUMBER_OCR_OFFSET，720p 基准实测）。逐条 OCR 提取
         数字串，包含目标尾号即命中；整轮扫完未命中再重扫一轮（容 OCR 抖动），
         仍找不到抛 RuntimeError（带 OCR 到的原文便于排查）。
+
+        卡片边界（_row_in_yostar_card）只用于**停止**扫描，且允许开头若干行
+        不像卡片（_ROW_CARD_MAX_LEADING_MISSES）——列表首条常是当前账号的
+        选中态高亮，若因第 1 行不是纯白就中断，会出现「一行都没 OCR 却报
+        找不到尾号」的误导性失败。
         """
         x, first_y = sw.first_account_pos
         dx1, dy1, dx2, dy2 = _ACCOUNT_NUMBER_OCR_OFFSET
         seen: list[str] = []
+        scanned_rows = 0
+        card_seen_any = False
         for pass_no in (1, 2):
+            card_seen = False
+            leading_misses = 0
             for n in range(1, _SWITCH_ROW_SCAN_LIMIT + 1):
                 click_y = first_y + (n - 1) * sw.account_row_height
-                if not self._row_in_yostar_card(sw, click_y):
+                if self._row_in_yostar_card(sw, click_y):
+                    card_seen = True
+                    card_seen_any = True
+                elif card_seen or leading_misses >= _ROW_CARD_MAX_LEADING_MISSES:
                     # 已扫出选择框白色卡片（后面是背景/版权文字），停止本轮
                     logger.info("第 %d 个条目已超出 Yostar 选择框卡片，停止扫描", n)
                     break
+                else:
+                    # 开头几行可能是当前账号的选中态高亮底色，继续扫（见 docstring）
+                    leading_misses += 1
+                    logger.info(
+                        "第 %d 个条目底色非纯白（可能为当前账号选中态高亮），仍继续扫描", n
+                    )
                 region = (x + dx1, click_y + dy1, x + dx2, click_y + dy2)
                 text = self._ocr_region(region)
+                scanned_rows += 1
                 digits = "".join(ch for ch in text if ch.isdigit())
                 if tail in digits:
                     logger.info(
@@ -1709,38 +1829,28 @@ class BaasBridge:
                         n, text, digits, tail, (x, click_y),
                     )
                     return (x, click_y)
-                if text:
+                if text and text not in seen:
                     seen.append(text)
             logger.info(
                 "第 %d 轮扫描未找到尾号 %s 的账号条目（识别到 %s），重扫一轮",
                 pass_no, tail, seen,
             )
+        # 区分两种失败：一个是「卡片边界/坐标不对，压根没扫到条目」，另一个是
+        # 「扫到了条目但号码对不上」。前者报空 OCR 列表会让用户去改尾号配置，白费功夫
+        if card_seen_any:
+            detail = f"OCR 识别到: {seen}"
+        else:
+            detail = (
+                f"整轮扫描都没识别到 Yostar 选择框的白色卡片（已 OCR {scanned_rows} "
+                f"个条目位置，文本: {seen}）——多半是「下拉箭头」或「第 1 个账号条目」"
+                "坐标与当前游戏版本/分辨率不符（WebUI「游戏内切换账号」可调）"
+            )
         raise RuntimeError(
-            f"未在 Yostar 账号列表中找到手机尾号为 {tail} 的条目（OCR 识别到: {seen}）。"
+            f"未在 Yostar 账号列表中找到手机尾号为 {tail} 的条目（{detail}）。"
             "请核对账号配置的手机尾号（WebUI「配置」页「手机尾号」）与下拉列表中"
             "显示的号码是否一致；若列表超出可见范围需要滚动，请先在游戏内登出多余"
             "账号或改用手动登录"
         )
-
-    def _row_in_yostar_card(self, sw: AccountSwitchConfig, click_y: int) -> bool:
-        """判断账号条目行是否仍在 Yostar 选择框的白色卡片内
-
-        扫描条目时防止把卡片下方的背景/版权文字数字误当号码：采样条目行右端
-        无文字处（first.x + 100）的像素，卡片为纯白（RGB 均 >= 230），背景
-        云层/横幅偏灰或偏暗。拿不到截图时放行（不拦截扫描）。
-        """
-        img = getattr(self.baas_thread, "latest_img_array", None)
-        if img is None:
-            return True
-        ratio = getattr(self.baas_thread, "ratio", 1.0) or 1.0
-        x, _first_y = sw.first_account_pos
-        sx = int((x + 100) * ratio)
-        sy = int(click_y * ratio)
-        h, w = img.shape[:2]
-        if sy < 0 or sy >= h or sx < 0 or sx >= w:
-            return False
-        b, g, r = (int(v) for v in img[sy, sx][:3])
-        return min(b, g, r) >= 230
 
     def click_banner_enter(self) -> None:
         """立即点击轮播图当前页的「进入活动」按钮（activity_enter1 @ (1196,195)）

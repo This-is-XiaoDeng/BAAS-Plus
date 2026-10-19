@@ -212,11 +212,11 @@
         </div>
         <div class="row">
           <div><label>账号条目行高（px）</label><input id="sw_account_row_height" type="number" value="100"></div>
-          <div><label>等「进入游戏」出现超时（秒）</label><input id="sw_dialog_timeout" type="number" value="300"></div>
+          <div><label title="杀进程重开游戏后，等待登录界面/账号选择框出现的最长时间。实测 720p 模拟器「重开 → Yostar 登录框出现」约 100~110s（首次冷启动还要做「正在初始化游戏数据」，更久），远端/低配模拟器更慢——调太小会让游戏在加载途中被判超时。">等登录界面出现超时（秒）</label><input id="sw_app_start_timeout" type="number" value="300"></div>
         </div>
         <div class="row">
-          <div><label title="重启游戏后持续这么久识别不到任何界面特征（登录界面/选择框/标题横幅），判定疑似自动登录进了主界面 → 再重启复位（最多 2 次）。冷启动加载慢的机器调大，避免把还在加载的游戏误杀重启">自动登录判定窗口（秒）</label><input id="sw_blind_restart_after" type="number" value="120"></div>
-          <div></div>
+          <div><label>等「进入游戏」出现超时（秒）</label><input id="sw_dialog_timeout" type="number" value="300"></div>
+          <div><label title="仅在拿不到主界面特征证据（BAAS core.image 不可用）时使用的兜底窗口；正常路径靠 BAAS 的 main_page 特征正面判定「已自动登录进了主界面」并立即重启复位。盲等无法区分「还在加载」与「已自动登录」，所以它只在短于上面的「等登录界面出现超时」时才会生效。">自动登录盲等兜底（秒）</label><input id="sw_blind_restart_after" type="number" value="300"></div>
         </div>
         <p class="hint">仅在分辨率/游戏版本更新导致点击错位时修改；模拟器分辨率非 720p 时 BAAS 会自动按比例缩放坐标。</p>
       </details>
@@ -501,7 +501,8 @@ function loadForm() {
   $('sw_first_account_pos').value = _pair(sw.first_account_pos, '600,420');
   $('sw_account_row_height').value = sw.account_row_height != null ? sw.account_row_height : 100;
   $('sw_dialog_timeout').value = sw.dialog_timeout != null ? sw.dialog_timeout : 300;
-  $('sw_blind_restart_after').value = sw.blind_restart_after != null ? sw.blind_restart_after : 120;
+  $('sw_app_start_timeout').value = sw.app_start_timeout != null ? sw.app_start_timeout : 300;
+  $('sw_blind_restart_after').value = sw.blind_restart_after != null ? sw.blind_restart_after : 300;
   // 全局活动设置（「活动」页，不随账号变化；兼容旧配置里 activity 缺失时的默认值）
   const g = cfg.activity || {};
   $('baas_current_activity').value = g.current_activity || '';
@@ -609,9 +610,8 @@ function collectConfig() {
       first_account_pos: _parsePair($('sw_first_account_pos').value, oldSw.first_account_pos || [600, 420]),
       account_row_height: parseInt($('sw_account_row_height').value) || (oldSw.account_row_height ?? 100),
       dialog_timeout: parseFloat($('sw_dialog_timeout').value) || (oldSw.dialog_timeout ?? 300),
-      blind_restart_after: parseFloat($('sw_blind_restart_after').value) || (oldSw.blind_restart_after ?? 120),
-      // 前端没有对应控件的老字段：原样带回去（否则保存会把用户改过的值重置成默认）
-      app_start_timeout: oldSw.app_start_timeout != null ? oldSw.app_start_timeout : 120,
+      app_start_timeout: parseFloat($('sw_app_start_timeout').value) || (oldSw.app_start_timeout ?? 300),
+      blind_restart_after: parseFloat($('sw_blind_restart_after').value) || (oldSw.blind_restart_after ?? 300),
     },
     // 全局活动设置（所有账号共用；「活动」页表单）
     activity: {

@@ -852,6 +852,131 @@ def test_switch_game_account_stops_scan_outside_card(bridge, no_sleep):
 
 
 
+def _yostar_card_screen_with_tinted_row(row: int, color_bgr: tuple[int, int, int]):
+    """Yostar 选择框截图，但第 row 个条目行整行带底色（模拟当前账号选中态）
+
+    底色只加在该行范围内（y-40 ~ y+40），卡片其余部分仍为纯白。
+    """
+    import numpy as np
+
+    img = np.zeros((720, 1280, 3), dtype=np.uint8)
+    img[155:566, 262:1110] = 255
+    y = 420 + (row - 1) * 100
+    img[y - 40 : y + 40, 262:1110] = color_bgr
+    return img
+
+
+def test_switch_game_account_tail_matches_highlighted_first_row(bridge, no_sleep):
+    """回归：列表首条是「当前账号」的选中态浅蓝底色时，仍要能扫到后面的条目
+
+    旧实现只采样 (first.x+100, click_y) 单点并要求 min(RGB) >= 230：选中态浅蓝
+    (214,226,240) 被判成「卡片外」→ 第 1 行就 break → **一行都不 OCR**，报错里
+    OCR 结果是空列表，把排查方向引向用户的尾号配置。
+    """
+    baas = FakeSwitchBaasThread(
+        ocr_texts={
+            _ENTER_REGION: ["进入游戏"],
+            _num_region(): ["136****3522", "135****9524", "135****9524"],
+        },
+        img=_yostar_card_screen_with_tinted_row(1, (240, 226, 214)),
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    bridge.switch_game_account(1, "9524")
+    assert baas.clicks == [(855, 315), (600, 520), (642, 430)]
+
+
+def test_switch_game_account_tail_scan_tolerates_dark_first_row(bridge, no_sleep):
+    """回归：首行底色比卡片阈值还暗（按下态等）也不能就此放弃整轮扫描
+
+    卡片边界判定只用于**停止**扫描，开头允许若干行不像卡片
+    （_ROW_CARD_MAX_LEADING_MISSES）——否则首行稍暗就整轮放弃。
+    """
+    baas = FakeSwitchBaasThread(
+        ocr_texts={
+            _ENTER_REGION: ["进入游戏"],
+            _num_region(): ["136****3522", "135****9524", "135****9524"],
+        },
+        img=_yostar_card_screen_with_tinted_row(1, (200, 190, 180)),
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    bridge.switch_game_account(1, "9524")
+    assert baas.clicks == [(855, 315), (600, 520), (642, 430)]
+
+
+def test_switch_game_account_tail_error_points_at_card_boundary(bridge, no_sleep):
+    """回归：整轮都没扫到白色卡片时，报错要指向坐标/卡片边界
+
+    旧实现在这种情况下抛出的是「OCR 识别到: []」——看起来像「号码没读出来」，
+    实际是「一行都没扫」，用户会去改尾号配置而白费功夫。
+    """
+    baas = FakeSwitchBaasThread(
+        ocr_texts={_ENTER_REGION: ["进入游戏"], _num_region(): ["", "", "", ""]},
+        img=_blank_screen(),  # 全黑：没有白色卡片
+    )
+    bridge = _switch_bridge(bridge)
+    bridge.baas_thread = baas
+    with pytest.raises(RuntimeError, match="没识别到 Yostar 选择框的白色卡片"):
+        bridge.switch_game_account(1, "9524")
+    # 选号失败绝不点「进入游戏」（防止进错号）
+    assert baas.clicks == [(855, 315)]
+
+
+def test_switch_game_account_slow_start_does_not_restart(bridge, fast_clock):
+    """回归：慢冷启动（任何界面特征都还没出现）不能把游戏杀掉重启
+
+    旧实现盲等判定先于总超时判定，且 blind_restart_after 默认等于
+    app_start_timeout（都是 120s）：游戏还在加载就被反复杀掉重启
+    （实机冷启动 90s+ 才出「正在初始化游戏数据」画面），最后报出
+    「疑似游戏已自动登录」这种指向错误的结论。
+    """
+    baas = FakeSwitchBaasThread(
+        ocr_texts={_ENTER_REGION: [""], _SWITCH_REGION: [""], _TITLE_REGION: [""]},
+        img=_blank_screen(),
+    )
+    bridge = _switch_bridge(
+        bridge, sw_kwargs={"app_start_timeout": 20.0, "blind_restart_after": 20.0}
+    )
+    bridge.baas_thread = baas
+    with pytest.raises(RuntimeError, match="等待登录界面超时"):
+        bridge.switch_game_account(1)
+    # 只启动一次：没有「疑似自动登录」的重启复位
+    assert baas.u2.calls == [
+        ("app_stop", "com.custom.bluearchive"),
+        ("app_start", "com.custom.bluearchive"),
+    ]
+    assert baas.clicks == []
+
+
+def test_switch_game_account_auto_login_detected_by_main_page(bridge, fast_clock, monkeypatch):
+    """自动登录判定优先用正面证据（主界面特征命中）才重启复位"""
+    baas = FakeSwitchBaasThread(
+        ocr_texts={_ENTER_REGION: ["进入游戏"], _SWITCH_REGION: [""], _TITLE_REGION: [""]},
+        img=_blank_screen(),
+    )
+    bridge = _switch_bridge(
+        bridge, sw_kwargs={"app_start_timeout": 600.0, "blind_restart_after": 600.0}
+    )
+    bridge.baas_thread = baas
+    # 让探针第一轮即可生效（否则要等 _MAIN_PAGE_PROBE_MIN_BLIND 秒）
+    monkeypatch.setattr("baas_plus.baas_bridge._MAIN_PAGE_PROBE_MIN_BLIND", 0.0)
+    seen = {"n": 0}
+
+    def fake_probe(self):
+        seen["n"] += 1
+        return seen["n"] == 1  # 第一次判定在主界面 → 重启；重启后不再误判
+
+    monkeypatch.setattr(BaasBridge, "_on_game_main_page", fake_probe)
+    bridge.switch_game_account(1)
+    # 初始启动 + 1 次自动登录复位
+    assert baas.u2.calls == [
+        ("app_stop", "com.custom.bluearchive"),
+        ("app_start", "com.custom.bluearchive"),
+    ] * 2
+    assert baas.clicks == [(855, 315), (600, 420), (642, 430)]
+
+
 def test_stop_can_keep_simulator_running(bridge, monkeypatch):
     """stop(stop_simulator=False)：停止 BAAS 线程但保留模拟器（切换模式传机用）"""
     from baas_plus.baas_bridge import BaasBridge

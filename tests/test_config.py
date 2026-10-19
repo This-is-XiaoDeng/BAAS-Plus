@@ -361,8 +361,12 @@ def test_account_switch_defaults_off():
     assert config.account_switch.enter_game_button == (642, 430)
     assert config.account_switch.first_account_pos == (600, 420)
     assert config.account_switch.account_row_height == 100
-    # 盲等窗口（疑似自动登录判定）默认 120s，旧配置缺字段时向后兼容
-    assert config.account_switch.blind_restart_after == 120.0
+    # 等登录界面出现默认 300s：实测「重开 → Yostar 登录框出现」约 106~114s，
+    # 旧的 120s 只留 6~14s 余量（远端/低配模拟器必超时），故放大到 300s
+    assert config.account_switch.app_start_timeout == 300.0
+    # 盲等兜底默认 300s（等于 app_start_timeout）：正常路径靠 BAAS main_page
+    # 特征正面判定自动登录，盲等只在短于 app_start_timeout 时才生效
+    assert config.account_switch.blind_restart_after == 300.0
     # 登出后等待 Yostar 选择框默认 300s（五分钟），旧配置缺字段时向后兼容
     assert config.account_switch.dialog_timeout == 300.0
     # 账号默认未设置游戏账号序号（0），不开启切换模式时无影响

@@ -221,16 +221,20 @@ class AccountSwitchConfig(BaseModel):
     first_account_pos: tuple[int, int] = (600, 420)
     # 账号条目的纵向间距（实测相邻两条目 y 相差 100px）
     account_row_height: int = 100
-    # 重启 BA 后等待登录界面出现的最长时间（秒；模拟器性能差/首次冷启动时调大）
-    app_start_timeout: float = 120.0
+    # 重启 BA 后等待登录界面出现的最长时间（秒）。**这是本流程最常被撞到的
+    # 上限**：实测 1280x720 模拟器上「杀进程重开 → Yostar 登录框出现」约
+    # 100~110s（首次冷启动还要做「正在初始化游戏数据」更久），远端/低配模拟器
+    # 更慢。默认 300s 给足余量；调太小会让游戏在加载途中被判超时
+    app_start_timeout: float = 300.0
     # 登出后等待 Yostar 账号选择框出现的最长时间（秒；登出动画/慢机器下过渡页
     # 可能迟迟不唤出选择框，默认 300s 留足余量）
     dialog_timeout: float = 300.0
-    # 疑似「自动登录」的盲等窗口（秒）：重启游戏后持续这么久识别不到任何已知
-    # 界面特征（登录界面/选择框/标题横幅），判定游戏带着当前账号自动登录直接
-    # 进了主界面 → 再次杀进程重启复位（最多 2 次）。冷启动加载慢的机器调大，
-    # 避免把还在加载的游戏误杀重启（重启反而更慢）
-    blind_restart_after: float = 120.0
+    # 「疑似自动登录」的盲等兜底窗口（秒）：只有在**拿不到主界面特征证据**
+    # （BAAS core.image 不可用/比对异常）时才用——正常路径靠 BAAS 的 main_page
+    # 特征正面判定「已自动登录进了主界面」并立即重启复位。盲等无法区分「还在
+    # 加载」与「已自动登录」，所以它只在短于 app_start_timeout 时才会生效；
+    # 默认 300s（等于 app_start_timeout）＝默认不靠盲等杀游戏，交给主界面特征判定
+    blind_restart_after: float = 300.0
 
 
 class WebUIConfig(BaseModel):
