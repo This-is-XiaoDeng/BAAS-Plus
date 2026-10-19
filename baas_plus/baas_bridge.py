@@ -1421,12 +1421,30 @@ class BaasBridge:
         logger.warning("等待公告弹窗关闭超时（%.0fs），仍有弹窗可能残留", timeout)
         return False
 
-    def _ocr_contains(self, region: tuple[int, int, int, int], keyword: str) -> bool:
-        """OCR 指定区域并判断是否包含关键词（空白/换行归一化，容 OCR 空格插入）"""
+    def _ocr_contains(
+        self,
+        region: tuple[int, int, int, int],
+        keyword: str,
+        max_error: int = 1,
+    ) -> bool:
+        """OCR 指定区域并判断是否包含关键词
+
+        空白/换行归一化（容 OCR 空格插入）；按 len(keyword) 宽度滑动窗口
+        允许至多 max_error 个字识别错误（容 OCR 单字误读，如「切换账号」
+        被识别成「切旋账号」——四字中三字相同即命中）。
+        """
         text = self._ocr_region(region)
         if not text:
             return False
-        return keyword in text.replace(" ", "").replace("\n", "")
+        normalized = text.replace(" ", "").replace("\n", "")
+        n = len(keyword)
+        if n == 0 or len(normalized) < n:
+            return False
+        for i in range(len(normalized) - n + 1):
+            window = normalized[i:i + n]
+            if sum(a != b for a, b in zip(window, keyword)) <= max_error:
+                return True
+        return False
 
     def switch_game_account(self, account_index: int, phone_tail: str = "") -> None:
         """游戏内切换到指定 Yostar 游戏账号（替代模拟器多开）
